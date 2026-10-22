@@ -76,10 +76,18 @@ $state = $null
 if ($Output) { $state = Read-BuildState $Output }
 
 if ($state -and $state.finished) {
+  # Steps a newer builder added since this build finished: done first.
+  $steps = Get-Steps $state
+  $new = @($steps.Keys | Where-Object { -not $steps[$_].always -and $_ -ne 'phone' -and $state.done -notcontains $_ })
+  if ($new.Count) {
+    Say ''
+    Say ("This builder adds to your build: {0}" -f (($new | ForEach-Object { $steps[$_].title }) -join ', ')) 'Cyan'
+    Invoke-Pipeline $state -Only $new
+  }
   Say ''
   $c = Ask-Choice 'Lightning Returns is already built here. What do you want to do?' @(
     'Add or update the 360 DLC', 'Add the PS3 disc (cinematics, PS3 buttons)', 'Add the Steam version (Japanese voices)',
-    'Install on a phone', 'Rebuild everything')
+    'Install on a phone', 'Rebuild everything', 'Nothing - close')
   switch ($c) {
     1 { $state.inputs.dlc360 = Ask-Dlc360 -Required; Save-BuildState $state; Invoke-Pipeline $state -Only @('dlc', 'phone') }
     2 { $state.inputs.ps3 = Ask-Ps3 -Required; Save-BuildState $state; Invoke-Pipeline $state -Only @('ps3', 'movies', 'android', 'phone') }
@@ -90,6 +98,7 @@ if ($state -and $state.finished) {
       else { Invoke-Pipeline $state -Only @('phone') }
     }
     5 { $state.done = @(); $state.finished = $false; Invoke-Pipeline $state }
+    6 { }
   }
   exit 0
 }

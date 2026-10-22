@@ -274,6 +274,29 @@ function Step-Settings($state, $p) {
   }
 }
 
+# Sharp fonts: the game's bitmap font atlases, number sheets and loading lettering rebuilt at 4x
+# from the 360 game's own glyphs (lr_uiconv --fonts), in the game folder's textures\replace\fonts,
+# which the renderer always uses. Built next to the old set and swapped in when complete.
+function Step-Fonts($state, $p) {
+  $exe = Join-Path $p.work 'lr_uiconv.exe'
+  $xx = Get-ChildItem -LiteralPath (Join-Path $script:T.sdk 'include') -Recurse -Filter 'xxhash.h' | Select-Object -First 1
+  Build-Converter $script:T (Join-Path $script:Repo 'converters\uiconv\lr_uiconv.cpp') $exe @("-I$($xx.DirectoryName)")
+  $out = Join-Path $p.textures 'replace\fonts'
+  $new = "$out.new"
+  if (Test-Path -LiteralPath $new) { Remove-Item -LiteralPath $new -Recurse -Force }
+  New-Item -ItemType Directory -Force -Path (Split-Path $new) | Out-Null
+  Say '  rebuilding the fonts at 4x (about a minute)...'
+  $rc = Invoke-Logged $exe @('--fonts', (Join-Path $script:Repo 'converters\uiconv\ui_sheets.csv'), (Join-Path $p.game 'weiss_data\sys'), $new,
+    '--scale', '4', '--sheet', 'gui/resident/pack/pack57', '--sheet', 'gui/resident/pack/pack58') (Join-Path $p.logs 'fonts.log')
+  if ($rc -ne 0) {
+    Remove-Item -LiteralPath $new -Recurse -Force -ErrorAction SilentlyContinue
+    throw "Rebuilding the fonts failed; see $(Join-Path $p.logs 'fonts.log')"
+  }
+  if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Recurse -Force }
+  Move-Item -LiteralPath $new -Destination $out
+  Say ("  {0} font textures in {1}" -f @(Get-ChildItem -LiteralPath $out -Filter '*.dds').Count, $out)
+}
+
 function Step-Ps3Ui($state, $p) {
   $ps3 = $state.inputs.ps3
   $sys = Join-Path $p.work 'ps3\sys'
@@ -492,6 +515,7 @@ function Get-Steps($state) {
     $s['plugin'] = @{ title = 'Building the renderer (Windows)'; run = ${function:Step-Plugin} }
     $s['install'] = @{ title = 'Game folder'; run = ${function:Step-Install} }
     $s['settings'] = @{ title = 'Settings'; run = ${function:Step-Settings} }
+    $s['fonts'] = @{ title = 'Sharp fonts'; run = ${function:Step-Fonts} }
   }
   if ($state.inputs.ps3) {
     $s['ps3'] = @{ title = 'PS3 buttons / UI'; run = ${function:Step-Ps3Ui} }
