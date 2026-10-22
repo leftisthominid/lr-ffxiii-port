@@ -4771,10 +4771,12 @@ REX_HOOK_RAW(sub_82D32278) {
   }
   uint32_t license_ptr = ctx.r8.u32;
   __imp__sub_82D32278(ctx, base);
-  static std::atomic<uint32_t> logged{0};
-  if (type == 2 && logged.fetch_add(1) < 64) {  // DLC only (saves are type 1)
+  static std::atomic<uint32_t> logged{0}, saves_logged{0};
+  if (type == 2 && logged.fetch_add(1) < 64) {
     REXLOG_INFO("LR DLC: opened '{}' as {}: result {:08X}, license {:08X}", file, root, ctx.r3.u32,
                 license_ptr ? lr_load_be32(base, license_ptr) : 0u);
+  } else if (type == 1 && saves_logged.fetch_add(1) < 64) {  // saves: Load Game problems
+    REXLOG_INFO("LR saves: opened '{}' as {}: result {:08X}", file, root, ctx.r3.u32);
   }
 }
 

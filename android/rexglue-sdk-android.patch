@@ -791,23 +791,87 @@
    for (const auto& old : devices_) {
      if (std::none_of(seen.begin(), seen.end(),
                       [&](const DeviceInfo& d) { return d.id == old.id; })) {
+--- a/src/kernel/xam/xam_content.cpp
++++ b/src/kernel/xam/xam_content.cpp
+@@ -107,7 +107,8 @@
+     // TODO(gibbed): disc drive content
+   }
+ 
+-  REXKRNL_DEBUG("XamContentCreateEnumerator: added {} items to enumerator", e->item_count());
++  REXKRNL_INFO("XamContentCreateEnumerator: XUID {:016X}, device {}, type {}: {} item(s)", xuid, device_id,
++               content_type, e->item_count());
+ 
+   *handle_out = e->handle();
+   return X_ERROR_SUCCESS;
 --- a/src/kernel/xam/xam_content_aggregate.cpp
 +++ b/src/kernel/xam/xam_content_aggregate.cpp
-@@ -101,6 +101,14 @@
+@@ -9,6 +9,9 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <algorithm>
++#include <set>
++#include <string>
+ #include <rex/filesystem/file.h>
+ #include <rex/kernel/xam/private.h>
+ #include <rex/logging.h>
+@@ -101,6 +104,17 @@
    auto content_type_enum = XContentType(uint32_t(content_type));
  
    uint64_t userxuid = REX_KERNEL_STATE()->user_profile()->xuid();
-+  // Lightning Returns passes the signed-in user's XUID with its upper half cleared
-+  // (00000000BABEBABE for B13EBABEBABEBABE), while its saves are written under the full XUID; the
-+  // PC port links the two folders, which shared storage on Android cannot. The same user's
-+  // content is listed under the full XUID.
-+  if (xuid != userxuid && xuid != 0 && (xuid >> 32) == 0 && uint32_t(xuid) == uint32_t(userxuid)) {
-+    REXKRNL_INFO("XamContentAggregateCreateEnumerator: XUID {:016X} taken as the user's {:016X}", xuid, userxuid);
-+    xuid = userxuid;
-+  }
++  // Lightning Returns does not pass the signed-in user's XUID here as it was given (on PC the
++  // upper half arrives cleared, 00000000BABEBABE), while its saves are written under the full XUID
++  // (B13EBABEBABEBABE); the PC port links the two folders, which Android's shared storage cannot.
++  // So saved games are listed under the passed XUID, the user's XUID and the common one (0),
++  // each folder once.
++  // The user's own folder first; a save found there is not listed again from another folder.
++  std::vector<uint64_t> xuids;
++  if (content_type == 1 && userxuid != 0) xuids.push_back(userxuid);
++  if (std::find(xuids.begin(), xuids.end(), xuid) == xuids.end()) xuids.push_back(xuid);
++  if (userxuid != 0 && std::find(xuids.begin(), xuids.end(), uint64_t(0)) == xuids.end()) xuids.push_back(0);
++  std::set<std::string> listed;
  
    if (!device_info || device_info->device_type == DeviceType::HDD) {
      // Fetch any alternate title IDs defined in the XEX header
+@@ -113,22 +127,11 @@
+     }
+ 
+     for (auto& title_id : title_ids) {
+-      // Get user-specific content
+-      auto content_datas = REX_KERNEL_STATE()->content_manager()->ListContent(
+-          static_cast<uint32_t>(DummyDeviceId::HDD), xuid, content_type_enum, title_id);
+-      for (const auto& content_data : content_datas) {
+-        auto item = e->AppendItem();
+-        assert_not_null(item);
+-        if (item) {
+-          *item = content_data;
+-        }
+-      }
+-
+-      // Also get common content (xuid=0)
+-      if (userxuid != 0) {
+-        auto common_datas = REX_KERNEL_STATE()->content_manager()->ListContent(
+-            static_cast<uint32_t>(DummyDeviceId::HDD), 0, content_type_enum, title_id);
+-        for (const auto& content_data : common_datas) {
++      for (uint64_t list_xuid : xuids) {
++        auto content_datas = REX_KERNEL_STATE()->content_manager()->ListContent(
++            static_cast<uint32_t>(DummyDeviceId::HDD), list_xuid, content_type_enum, title_id);
++        for (const auto& content_data : content_datas) {
++          if (!listed.insert(fmt::format("{:08X}/{}", title_id, content_data.file_name())).second) continue;
+           auto item = e->AppendItem();
+           assert_not_null(item);
+           if (item) {
+@@ -143,8 +146,8 @@
+     AddODDContentTest(e, content_type_enum);
+   }
+ 
+-  REXKRNL_DEBUG("XamContentAggregateCreateEnumerator: added {} items to enumerator",
+-                e->item_count());
++  REXKRNL_INFO("XamContentAggregateCreateEnumerator: XUID {:016X} (user {:016X}), device {}, type {}: {} item(s)",
++               xuid, userxuid, device_id, content_type, e->item_count());
+ 
+   *handle_out = e->handle();
+   return X_ERROR_SUCCESS;
 --- a/src/system/gpu_plugin_loader.cpp
 +++ b/src/system/gpu_plugin_loader.cpp
 @@ -55,8 +55,18 @@
