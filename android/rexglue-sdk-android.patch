@@ -791,6 +791,23 @@
    for (const auto& old : devices_) {
      if (std::none_of(seen.begin(), seen.end(),
                       [&](const DeviceInfo& d) { return d.id == old.id; })) {
+--- a/src/kernel/xam/xam_content_aggregate.cpp
++++ b/src/kernel/xam/xam_content_aggregate.cpp
+@@ -101,6 +101,14 @@
+   auto content_type_enum = XContentType(uint32_t(content_type));
+ 
+   uint64_t userxuid = REX_KERNEL_STATE()->user_profile()->xuid();
++  // Lightning Returns passes the signed-in user's XUID with its upper half cleared
++  // (00000000BABEBABE for B13EBABEBABEBABE), while its saves are written under the full XUID; the
++  // PC port links the two folders, which shared storage on Android cannot. The same user's
++  // content is listed under the full XUID.
++  if (xuid != userxuid && xuid != 0 && (xuid >> 32) == 0 && uint32_t(xuid) == uint32_t(userxuid)) {
++    REXKRNL_INFO("XamContentAggregateCreateEnumerator: XUID {:016X} taken as the user's {:016X}", xuid, userxuid);
++    xuid = userxuid;
++  }
+ 
+   if (!device_info || device_info->device_type == DeviceType::HDD) {
+     // Fetch any alternate title IDs defined in the XEX header
 --- a/src/system/gpu_plugin_loader.cpp
 +++ b/src/system/gpu_plugin_loader.cpp
 @@ -55,8 +55,18 @@

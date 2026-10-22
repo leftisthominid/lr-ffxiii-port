@@ -194,7 +194,15 @@ function Repair-SdkLinks($t, $a) {
 # The ReXGlue SDK source at the release commit, its third-party code at the pinned commits, and
 # the Android changes (builder\android\rexglue-sdk-android.patch).
 function Get-SdkSource($t, $a) {
-  if (Test-Path -LiteralPath (Join-Path $a.src '.lr-android-ready')) { Repair-SdkLinks $t $a; return }
+  # The marker holds the SDK commit and the Android changes it was made with; a newer builder
+  # with other Android changes fetches the source again.
+  $patchFile = Join-Path $script:Repo 'android\rexglue-sdk-android.patch'
+  $stamp = "$script:SdkCommit $((Get-FileHash -LiteralPath $patchFile -Algorithm SHA256).Hash)"
+  $marker = Join-Path $a.src '.lr-android-ready'
+  if (Test-Path -LiteralPath $marker) {
+    if ((Get-Content -LiteralPath $marker -TotalCount 1) -eq $stamp) { Repair-SdkLinks $t $a; return }
+    Say '  the Android changes are newer than the SDK source here; fetching it again'
+  }
   $tmp = "$($a.src).new"
   if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
   New-Item -ItemType Directory -Force -Path $tmp | Out-Null
@@ -217,7 +225,7 @@ function Get-SdkSource($t, $a) {
   Invoke-Git $t @('apply', '--whitespace=nowarn', (Join-Path $script:Repo 'android\rexglue-sdk-android.patch')) $tmp
   if (Test-Path -LiteralPath $a.src) { Remove-Item -LiteralPath $a.src -Recurse -Force }
   Move-Item -LiteralPath $tmp -Destination $a.src
-  Set-Content -LiteralPath (Join-Path $a.src '.lr-android-ready') -Value $script:SdkCommit
+  Set-Content -LiteralPath $marker -Value $stamp
 }
 
 function Get-NdkCMakeArgs($t) {
