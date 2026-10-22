@@ -1,0 +1,1838 @@
+--- a/include/rex/audio/sdl/sdl_audio_driver.h
++++ b/include/rex/audio/sdl/sdl_audio_driver.h
+@@ -12,6 +12,7 @@
+ #pragma once
+ 
+ #include <mutex>
++#include <atomic>
+ #include <queue>
+ #include <stack>
+ 
+@@ -49,6 +50,7 @@
+   std::queue<float*> frames_queued_ = {};
+   std::stack<float*> frames_unused_ = {};
+   std::mutex frames_mutex_ = {};
++  std::atomic<uint32_t> silent_callbacks_{0};
+ };
+ 
+ }  // namespace rex::audio::sdl
+--- a/include/rex/chrono/chrono.h
++++ b/include/rex/chrono/chrono.h
+@@ -116,8 +116,8 @@
+ 
+ namespace std::chrono {
+ 
+-#ifdef __APPLE__
+-// Apple libc++ does not expose clock_time_conversion or clock_cast.
++#if defined(__APPLE__) || defined(__ANDROID__)
++// Apple libc++ (and the NDK r28 libc++) does not expose clock_time_conversion or clock_cast.
+ template <class, class>
+ struct clock_time_conversion {};
+ 
+--- a/include/rex/main_android.h
++++ b/include/rex/main_android.h
+@@ -0,0 +1,15 @@
++#pragma once
++/**
++ * Android process helpers (the parts of Xenia's main_android.h the runtime uses).
++ */
++
++#include <cstdint>
++
++#include <rex/platform.h>
++
++#if REX_PLATFORM_ANDROID
++namespace rex {
++// Device API level (android_get_device_api_level), cached.
++int32_t GetAndroidApiLevel();
++}  // namespace rex
++#endif
+--- a/include/rex/ppc/context.h
++++ b/include/rex/ppc/context.h
+@@ -147,7 +147,13 @@
+ struct FPSCRRegister {
+   uint32_t csr;
+ 
++#if defined(__aarch64__) || defined(_M_ARM64)
++  // FPCR.RMode: 0 nearest, 1 toward +inf, 2 toward -inf, 3 toward zero.
++  static constexpr size_t HostToGuest[] = {kRoundNearest, kRoundUp, kRoundDown, kRoundTowardZero};
++#else
++  // MXCSR.RC: 0 nearest, 1 down, 2 up, 3 toward zero.
+   static constexpr size_t HostToGuest[] = {kRoundNearest, kRoundDown, kRoundUp, kRoundTowardZero};
++#endif
+ 
+   using Platform = platform::FPSCRPlatform;
+   static constexpr size_t RoundShift = Platform::RoundShift;
+@@ -177,6 +183,24 @@
+     setcsr(csr);
+   }
+ 
++#if defined(__aarch64__) || defined(_M_ARM64)
++  // AArch64: denormals are flushed for the whole thread (InitHost) and the per-instruction
++  // switches do nothing. Writing FPCR around every vector/scalar transition serializes the FP
++  // pipeline, and the compiler does not order FP arithmetic against the inline msr, so vector
++  // math could run in the scalar (non-flushing) mode anyway. The guest's vector unit flushes
++  // denormals (non-Java mode); scalar denormals are vanishingly rare in game code.
++  inline void enableFlushModeUnconditional() noexcept {}
++  inline void disableFlushModeUnconditional() noexcept {}
++  inline void enableFlushMode() noexcept {}
++  inline void disableFlushMode() noexcept {}
++
++  inline void InitHost() noexcept {
++    csr = getcsr();
++    Platform::InitHostExceptions(csr);
++    csr |= FlushMask;
++    setcsr(csr);
++  }
++#else
+   inline void enableFlushModeUnconditional() noexcept {
+     csr |= FlushMask;
+     setcsr(csr);
+@@ -206,6 +230,7 @@
+     Platform::InitHostExceptions(csr);
+     setcsr(csr);
+   }
++#endif
+ };
+ 
+ }  // namespace rex::ppc
+--- a/include/rex/string/numeric.h
++++ b/include/rex/string/numeric.h
+@@ -26,7 +26,7 @@
+ #include <rex/string/utf8.h>
+ #include <rex/vec128.h>
+ 
+-#if REX_PLATFORM_MAC
++#if REX_PLATFORM_MAC || REX_PLATFORM_ANDROID
+ #include <locale.h>
+ #endif
+ 
+@@ -114,7 +114,7 @@
+   return result;
+ }
+ 
+-#if REX_PLATFORM_MAC
++#if REX_PLATFORM_MAC || REX_PLATFORM_ANDROID
+ template <typename T>
+ inline std::from_chars_result portable_float_from_chars(const char* first, const char* last,
+                                                         T& value) {
+@@ -189,7 +189,7 @@
+     }
+     std::memcpy(&result, &pun, sizeof(PUN));
+   } else {
+-#if REX_PLATFORM_MAC
++#if REX_PLATFORM_MAC || REX_PLATFORM_ANDROID
+     auto [p, error] = portable_float_from_chars(range.data(), range.data() + range.size(), result);
+ #else
+     auto [p, error] = std::from_chars(range.data(), range.data() + range.size(), result,
+@@ -316,7 +316,7 @@
+         assert_always();
+         return vec128_t();
+       }
+-#if REX_PLATFORM_MAC
++#if REX_PLATFORM_MAC || REX_PLATFORM_ANDROID
+       auto result = detail::portable_float_from_chars(p, end, v.f32[i]);
+ #else
+       auto result = std::from_chars(p, end, v.f32[i], std::chars_format::general);
+--- a/include/rex/thread/fiber.h
++++ b/include/rex/thread/fiber.h
+@@ -14,7 +14,12 @@
+ #include <rex/platform.h>
+ #include <cstddef>
+ 
+-#if REX_PLATFORM_LINUX || REX_PLATFORM_MAC
++#if REX_PLATFORM_ANDROID
++// bionic has no getcontext/makecontext/swapcontext: fibers switch with a small aarch64
++// routine instead (fiber_posix.cpp).
++#include <cstdint>
++#include <vector>
++#elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+ #if REX_PLATFORM_MAC && !defined(_XOPEN_SOURCE)
+ // Darwin hides the deprecated ucontext APIs unless _XOPEN_SOURCE is defined
+ // before including <ucontext.h>.
+@@ -56,6 +61,17 @@
+ #if REX_PLATFORM_WIN32
+   void* handle_ = nullptr;
+   bool is_thread_fiber_ = false;
++#elif REX_PLATFORM_ANDROID
++  void* sp_ = nullptr;  // saved stack pointer while switched out (callee-saved regs on it)
++  std::vector<uint8_t> stack_;
++  void (*entry_)(void*) = nullptr;
++  void* arg_ = nullptr;
++  bool is_thread_fiber_ = false;
++
++ public:
++  static void Trampoline();  // called from the switch routine's first entry
++
++ private:
+ #elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+   ucontext_t context_{};
+   std::vector<uint8_t> stack_;
+--- a/include/rex/ui/surface_android.h
++++ b/include/rex/ui/surface_android.h
+@@ -0,0 +1,30 @@
++#pragma once
++/**
++ * Android ANativeWindow surface (Vulkan VK_KHR_android_surface).
++ * Based on Xenia's surface_android.h (BSD license).
++ */
++
++#include <cstdint>
++
++#include <android/native_window.h>
++
++#include <rex/ui/surface.h>
++
++namespace rex {
++namespace ui {
++
++class AndroidNativeWindowSurface final : public Surface {
++ public:
++  explicit AndroidNativeWindowSurface(ANativeWindow* window) : window_(window) {}
++  TypeIndex GetType() const override { return kTypeIndex_AndroidNativeWindow; }
++  ANativeWindow* window() const { return window_; }
++
++ protected:
++  bool GetSizeImpl(uint32_t& width_out, uint32_t& height_out) const override;
++
++ private:
++  ANativeWindow* window_;
++};
++
++}  // namespace ui
++}  // namespace rex
+--- a/include/rex/ui/window_sdl.h
++++ b/include/rex/ui/window_sdl.h
+@@ -42,6 +42,11 @@
+   void HandleMouseEvent(SDL_Event& event);
+   void HandleDropEvent(SDL_Event& event);
+   void HandlePaintEvent();
++#if REX_PLATFORM_ANDROID
++  // Android: the native window is destroyed while the app is in the background; the presenter
++  // lets go of its surface before and gets a new one from the new window after.
++  void HandleAppBackground(bool background);
++#endif
+ 
+  protected:
+   uint32_t GetLatestDpiImpl() const override;
+--- a/src/audio/sdl/sdl_audio_driver.cpp
++++ b/src/audio/sdl/sdl_audio_driver.cpp
+@@ -75,6 +75,11 @@
+ 
+   // A 1-channel device gets the stereo fold too, then SDL collapses to mono.
+   // Handing it a 6ch stream instead would use SDL's own downmix.
++#if defined(__ANDROID__)
++  // Android reports the requested 6 channels for phone speakers and headsets alike; a 6-channel
++  // AAudio stream can stay silent there, so always fold to stereo.
++  obtained_spec.channels = 2;
++#endif
+   if (obtained_spec.channels <= 2) {
+     SDL_DestroyAudioStream(sdl_stream_);
+     sdl_stream_ = nullptr;
+@@ -124,6 +129,39 @@
+ 
+   std::memcpy(output_frame, input_frame, frame_samples_ * sizeof(float));
+ 
++  // Once every ~10 s of audio: what the game submits (frames, loudest sample, invalid samples)
++  // and how often the device found nothing queued.
++  {
++    static uint32_t stat_frames = 0, stat_nan = 0;
++    static float stat_peak = 0.0f;
++    for (uint32_t i = 0; i < frame_samples_; ++i) {
++      uint32_t bits;
++      std::memcpy(&bits, &output_frame[i], 4);
++      bits = __builtin_bswap32(bits);
++      float v;
++      std::memcpy(&v, &bits, 4);
++      if (v != v) {
++        ++stat_nan;
++      } else {
++        stat_peak = std::max(stat_peak, v < 0 ? -v : v);
++      }
++    }
++    if (++stat_frames >= 1875) {
++      size_t queued;
++      {
++        std::unique_lock<std::mutex> guard(frames_mutex_);
++        queued = frames_queued_.size();
++      }
++      REXAPU_INFO("audio: {} frames submitted, peak {:.4f}, {} NaN samples, {} queued, {} silent "
++                  "device callbacks since the last report",
++                  stat_frames, stat_peak, stat_nan, queued,
++                  silent_callbacks_.exchange(0, std::memory_order_relaxed));
++      stat_frames = 0;
++      stat_nan = 0;
++      stat_peak = 0.0f;
++    }
++  }
++
+   static uint32_t sdl_submit_count = 0;
+   if (sdl_submit_count < 10) {
+     REXAPU_DEBUG("SDLAudioDriver::SubmitFrame: frame_ptr={:08X} queued_count={}", frame_ptr,
+@@ -182,6 +220,7 @@
+     static uint32_t sdl_callback_count = 0;
+     std::unique_lock<std::mutex> guard(driver->frames_mutex_);
+     if (driver->frames_queued_.empty()) {
++      driver->silent_callbacks_.fetch_add(1, std::memory_order_relaxed);
+       if (sdl_callback_count < 10) {
+         REXAPU_DEBUG("SDLCallback: no frames queued (silence)");
+         sdl_callback_count++;
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -24,8 +24,8 @@
+ )
+ add_library(rex::core ALIAS rexcore)
+ 
+-if(APPLE)
+-    # Apple's libc++ still gates std::jthread/std::stop_token behind the
++if(APPLE OR ANDROID)
++    # Apple's libc++ (and the NDK's) still gates std::jthread/std::stop_token behind the
+     # experimental-library feature flag. Only timer_queue.cpp uses them, and
+     # neither type crosses a header boundary.
+     set_source_files_properties(timer_queue.cpp PROPERTIES
+@@ -74,6 +74,9 @@
+         system_posix.cpp
+         threading_posix.cpp
+     )
++    if(ANDROID)
++        target_sources(rexcore PRIVATE main_android.cpp)
++    endif()
+ endif()
+ 
+ # Xenos data-format layer (stateless; headers under include/rex/graphics/).
+@@ -100,6 +103,9 @@
+ 
+ if(APPLE)
+     target_link_libraries(rexcore PRIVATE pthread)
++elseif(ANDROID)
++    # bionic has pthread/rt in libc
++    target_link_libraries(rexcore PRIVATE dl log android)
+ elseif(UNIX)
+     target_link_libraries(rexcore PRIVATE pthread rt dl)
+ endif()
+--- a/src/core/fiber_posix.cpp
++++ b/src/core/fiber_posix.cpp
+@@ -17,7 +17,126 @@
+ #endif
+ 
+ #include <rex/platform.h>
+-#if REX_PLATFORM_LINUX || REX_PLATFORM_MAC
++#if REX_PLATFORM_ANDROID && defined(__aarch64__)
++
++#include <rex/thread/fiber.h>
++
++#include <cassert>
++#include <cstdlib>
++
++// rex_fiber_switch(void** save_sp, void* load_sp): pushes the AAPCS64 callee-saved state
++// (x19-x30, d8-d15, FPCR) on the current stack, stores sp to *save_sp, switches to load_sp and
++// pops the same frame from there. A new fiber's stack holds a frame whose x30 is
++// rex_fiber_start, which calls Fiber::Trampoline().
++extern "C" void rex_fiber_switch(void** save_sp, void* load_sp);
++extern "C" void rex_fiber_start();
++extern "C" void rex_fiber_trampoline_c() {
++  rex::thread::Fiber::Trampoline();
++  // A fiber entry must never return (nothing to return to).
++  std::abort();
++}
++
++asm(R"(
++  .text
++  .p2align 4
++  .globl rex_fiber_switch
++  .type rex_fiber_switch, %function
++rex_fiber_switch:
++  sub sp, sp, #176
++  stp x19, x20, [sp, #0]
++  stp x21, x22, [sp, #16]
++  stp x23, x24, [sp, #32]
++  stp x25, x26, [sp, #48]
++  stp x27, x28, [sp, #64]
++  stp x29, x30, [sp, #80]
++  stp d8, d9, [sp, #96]
++  stp d10, d11, [sp, #112]
++  stp d12, d13, [sp, #128]
++  stp d14, d15, [sp, #144]
++  mrs x9, fpcr
++  str x9, [sp, #160]
++  mov x9, sp
++  str x9, [x0]
++  mov sp, x1
++  ldp x19, x20, [sp, #0]
++  ldp x21, x22, [sp, #16]
++  ldp x23, x24, [sp, #32]
++  ldp x25, x26, [sp, #48]
++  ldp x27, x28, [sp, #64]
++  ldp x29, x30, [sp, #80]
++  ldp d8, d9, [sp, #96]
++  ldp d10, d11, [sp, #112]
++  ldp d12, d13, [sp, #128]
++  ldp d14, d15, [sp, #144]
++  ldr x9, [sp, #160]
++  msr fpcr, x9
++  add sp, sp, #176
++  ret
++  .size rex_fiber_switch, .-rex_fiber_switch
++
++  .p2align 4
++  .globl rex_fiber_start
++  .type rex_fiber_start, %function
++rex_fiber_start:
++  mov x29, xzr
++  mov x30, xzr
++  bl rex_fiber_trampoline_c
++  brk #0
++  .size rex_fiber_start, .-rex_fiber_start
++)");
++
++namespace rex::thread {
++
++thread_local Fiber* Fiber::tls_current_ = nullptr;
++
++Fiber* Fiber::ConvertCurrentThread() {
++  auto* f = new Fiber();
++  f->is_thread_fiber_ = true;
++  tls_current_ = f;
++  return f;
++}
++
++Fiber* Fiber::Create(size_t stack_size, void (*entry)(void*), void* arg) {
++  auto* f = new Fiber();
++  f->entry_ = entry;
++  f->arg_ = arg;
++  if (stack_size < 64 * 1024) stack_size = 64 * 1024;
++  f->stack_.resize(stack_size);
++  uintptr_t top = reinterpret_cast<uintptr_t>(f->stack_.data() + f->stack_.size()) & ~uintptr_t(15);
++  auto* frame = reinterpret_cast<uint64_t*>(top - 176);
++  for (int i = 0; i < 22; ++i) frame[i] = 0;
++  frame[11] = reinterpret_cast<uint64_t>(&rex_fiber_start);  // x30
++  uint64_t fpcr;
++  asm volatile("mrs %0, fpcr" : "=r"(fpcr));
++  frame[20] = fpcr;
++  f->sp_ = frame;
++  return f;
++}
++
++/*static*/ void Fiber::Trampoline() {
++  // tls_current_ was updated by SwitchTo before the switch landed here.
++  Fiber* f = tls_current_;
++  f->entry_(f->arg_);
++}
++
++void Fiber::SwitchTo(Fiber* target) {
++  Fiber* from = tls_current_;
++  tls_current_ = target;
++  rex_fiber_switch(&from->sp_, target->sp_);
++}
++
++void Fiber::Destroy() {
++  if (is_thread_fiber_) {
++    tls_current_ = nullptr;
++  } else {
++    assert(this != tls_current_ && "Destroy called on the currently running fiber");
++  }
++  delete this;
++}
++
++}  // namespace rex::thread
++
++#elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+ 
+ #include <rex/thread/fiber.h>
+ 
+--- a/src/core/filesystem_posix.cpp
++++ b/src/core/filesystem_posix.cpp
+@@ -34,6 +34,10 @@
+ #include <ftw.h>
+ #include <libgen.h>
+ #include <pwd.h>
++#if defined(__ANDROID__)
++#include <dlfcn.h>
++#include <cstdlib>
++#endif
+ 
+ // macOS off_t is 64-bit with no *64 large-file variants; Linux keeps the
+ // explicit *64 forms for legacy 32-bit off_t distributions.
+@@ -70,7 +74,15 @@
+ namespace filesystem {
+ 
+ std::filesystem::path GetExecutablePath() {
+-#if defined(__APPLE__)
++#if defined(__ANDROID__)
++  // An app process runs /system/bin/app_process64; the meaningful "executable" is this
++  // library, librexruntime.so, in the APK's native library directory.
++  Dl_info info{};
++  if (dladdr(reinterpret_cast<const void*>(&GetExecutablePath), &info) && info.dli_fname) {
++    return std::filesystem::path(info.dli_fname);
++  }
++  return {};
++#elif defined(__APPLE__)
+   // Darwin has no /proc; query the executable path via the dyld API. The first
+   // call reports the required buffer size.
+   uint32_t executable_path_size = 0;
+@@ -100,6 +112,15 @@
+ }
+ 
+ std::filesystem::path GetExecutableFolder() {
++#if defined(__ANDROID__)
++  // The native library directory is read-only, and the runtime keeps its config file
++  // (<name>.toml) and default log folder next to the executable: the launcher points
++  // REX_ANDROID_APP_DIR at a writable folder for them. GPU plugins are looked up in the
++  // native library directory (gpu_plugin_loader.cpp).
++  if (const char* dir = std::getenv("REX_ANDROID_APP_DIR"); dir && *dir) {
++    return std::filesystem::path(dir);
++  }
++#endif
+   return GetExecutablePath().parent_path();
+ }
+ 
+--- a/src/core/main_android.cpp
++++ b/src/core/main_android.cpp
+@@ -0,0 +1,49 @@
++/**
++ * Android process helpers: API level and the dynamically loaded libc / libandroid entry points
++ * the POSIX threading and memory backends use (pthread_getname_np, ASharedMemory_create).
++ */
++
++#include <rex/main_android.h>
++
++#if REX_PLATFORM_ANDROID
++
++#include <android/api-level.h>
++
++#include <string_view>
++
++#include <rex/filesystem.h>
++#include <rex/memory/utils.h>
++#include <rex/thread.h>
++
++namespace rex {
++
++int32_t GetAndroidApiLevel() {
++  static const int32_t level = android_get_device_api_level();
++  return level;
++}
++
++namespace filesystem {
++// Storage Access Framework content:// URIs are not used by this port (game data is read from a
++// plain directory path), so these only report "not a content URI" / failure.
++void AndroidInitialize() {}
++void AndroidShutdown() {}
++bool IsAndroidContentUri(const std::string_view source) {
++  return source.substr(0, 10) == "content://";
++}
++int OpenAndroidContentFileDescriptor(const std::string_view, const char*) {
++  return -1;
++}
++}  // namespace filesystem
++
++namespace {
++// Runs when librexruntime.so is loaded, before any guest memory is mapped or thread is named.
++// Both only dlopen system libraries that every app process already has loaded.
++__attribute__((constructor)) void RexAndroidRuntimeInit() {
++  rex::memory::AndroidInitialize();
++  rex::thread::AndroidInitialize();
++}
++}  // namespace
++
++}  // namespace rex
++
++#endif  // REX_PLATFORM_ANDROID
+--- a/src/core/memory_posix.cpp
++++ b/src/core/memory_posix.cpp
+@@ -53,8 +53,7 @@
+ 
+ #include <linux/ashmem.h>
+ 
+-// TODO(tomc): Android or maybe na. idk
+-// #include "xenia/base/main_android.h"
++#include <rex/main_android.h>
+ #endif
+ 
+ namespace rex {
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -15,7 +15,10 @@
+ 
+ #include <atomic>
+ #include <array>
++#include <algorithm>
+ #include <cerrno>
++#include <chrono>
++#include <cstdlib>
+ #include <cstddef>
+ #include <ctime>
+ #include <deque>
+@@ -267,10 +270,25 @@
+ }
+ #endif  // __APPLE__
+ 
++// Multi-object waits sleep on one process-wide condition variable instead of polling: a
++// condition that may have become signaled bumps the generation and wakes them (taking the
++// mutex only while a multi-object wait is in progress).
++std::mutex g_multi_wait_mutex;
++std::condition_variable g_multi_wait_cv;
++std::atomic<uint64_t> g_multi_wait_generation{0};
++std::atomic<int> g_multi_waiters{0};
++inline void NotifyMultiWaiters() {
++  g_multi_wait_generation.fetch_add(1);
++  if (g_multi_waiters.load() > 0) {
++    std::lock_guard<std::mutex> lock(g_multi_wait_mutex);
++    g_multi_wait_cv.notify_all();
++  }
++}
++
+ class PosixConditionBase {
+  public:
+   PosixConditionBase() {
+-#if REX_PLATFORM_LINUX
++#if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID  // bionic: no robust mutexes
+     // Use robust mutexes so waits can recover if owner thread terminates.
+     pthread_mutexattr_t attr;
+     if (pthread_mutexattr_init(&attr) == 0) {
+@@ -290,7 +308,7 @@
+   WaitResult Wait(std::chrono::milliseconds timeout) {
+     bool executed;
+     auto predicate = [this] { return this->signaled(); };
+-#if REX_PLATFORM_LINUX
++#if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID  // bionic: no robust mutexes
+     auto native_mutex = static_cast<pthread_mutex_t*>(mutex_.native_handle());
+     int lock_result = pthread_mutex_lock(native_mutex);
+     if (lock_result == EOWNERDEAD) {
+@@ -300,6 +318,30 @@
+     }
+     std::unique_lock<std::mutex> lock(mutex_, std::adopt_lock);
+ #else
++#if REX_PLATFORM_ANDROID
++    // Spin briefly before sleeping: the game's job system hands work between threads hundreds
++    // of times a frame, and on a phone each sleep/wake-up costs roughly half a millisecond
++    // (idle cores at low clocks), several milliseconds a frame in all. A signal that arrives
++    // within the spin is seen without that wake-up. LR_WAIT_SPIN_US sets the spin (0: off).
++    if (timeout.count() != 0) {
++      static const int64_t spin_us = [] {
++        const char* v = std::getenv("LR_WAIT_SPIN_US");
++        return v ? std::max<int64_t>(0, std::atoll(v)) : int64_t(150);
++      }();
++      if (spin_us) {
++        auto end = std::chrono::steady_clock::now() + std::chrono::microseconds(spin_us);
++        for (int i = 0;; ++i) {
++          if (mutex_.try_lock()) {
++            bool ready = predicate();
++            mutex_.unlock();
++            if (ready) break;
++          }
++          if ((i & 15) == 15 && std::chrono::steady_clock::now() >= end) break;
++          for (int k = 0; k < 32; ++k) __asm__ __volatile__("yield");
++        }
++      }
++    }
++#endif
+     std::unique_lock<std::mutex> lock(mutex_);
+ #endif
+     if (predicate()) {
+@@ -335,7 +377,14 @@
+                         ? std::chrono::steady_clock::time_point::max()
+                         : start_time + timeout;
+ 
++    g_multi_waiters.fetch_add(1);
++    struct LeaveMultiWait {
++      ~LeaveMultiWait() { g_multi_waiters.fetch_sub(1); }
++    } leave_multi_wait;
++
+     while (true) {
++      // Read before checking: a signal after the check changes it, so the sleep below ends.
++      uint64_t generation = g_multi_wait_generation.load();
+       size_t first_signaled = std::numeric_limits<size_t>::max();
+       bool condition_met = false;
+       bool all_locked = true;
+@@ -344,7 +393,7 @@
+       locks.reserve(handles.size());
+ 
+       for (size_t i = 0; i < handles.size(); ++i) {
+-#if REX_PLATFORM_LINUX
++#if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID  // bionic: no robust mutexes
+         auto native_mutex = static_cast<pthread_mutex_t*>(handles[i]->mutex_.native_handle());
+         int result = pthread_mutex_trylock(native_mutex);
+         if (result == 0 || result == EOWNERDEAD) {
+@@ -411,12 +460,12 @@
+         return std::make_pair<WaitResult, size_t>(WaitResult::kTimeout, 0);
+       }
+ 
+-      if (timeout == std::chrono::milliseconds::max()) {
+-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
++      std::unique_lock<std::mutex> wait_lock(g_multi_wait_mutex);
++      auto changed = [generation] { return g_multi_wait_generation.load() != generation; };
++      if (end_time == std::chrono::steady_clock::time_point::max()) {
++        g_multi_wait_cv.wait(wait_lock, changed);
+       } else {
+-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - now);
+-        auto sleep_time = std::min(remaining, std::chrono::milliseconds(1));
+-        std::this_thread::sleep_for(sleep_time);
++        g_multi_wait_cv.wait_until(wait_lock, end_time, changed);
+       }
+     }
+   }
+@@ -450,6 +499,7 @@
+     auto lock = std::unique_lock<std::mutex>(mutex_);
+     signal_ = true;
+     cond_.notify_all();
++    NotifyMultiWaiters();
+     return true;
+   }
+ 
+@@ -487,6 +537,7 @@
+     }
+     count_ += release_count;
+     cond_.notify_all();
++    NotifyMultiWaiters();
+     return true;
+   }
+ 
+@@ -519,6 +570,7 @@
+       // Free to be acquired by another thread
+       if (count_ == 0) {
+         cond_.notify_all();
++        NotifyMultiWaiters();
+       }
+       return true;
+     }
+@@ -551,6 +603,7 @@
+     std::lock_guard<std::mutex> lock(mutex_);
+     signal_ = true;
+     cond_.notify_all();
++    NotifyMultiWaiters();
+     return true;
+   }
+ 
+@@ -979,6 +1032,7 @@
+       exit_code_ = exit_code;
+       signaled_ = true;
+       cond_.notify_all();
++      NotifyMultiWaiters();
+     }
+     if (is_current_thread) {
+       pthread_exit(reinterpret_cast<void*>(exit_code));
+@@ -1315,7 +1369,7 @@
+   }
+   bool SetOnceAt(WClock_::time_point due_time,
+                  std::function<void()> opt_callback = nullptr) override {
+-    return SetOnceAt(std::chrono::clock_cast<GClock_>(due_time), std::move(opt_callback));
++    return SetOnceAt(ToSteady(due_time), std::move(opt_callback));
+   };
+   bool SetOnceAt(GClock_::time_point due_time,
+                  std::function<void()> opt_callback = nullptr) override {
+@@ -1329,8 +1383,7 @@
+   }
+   bool SetRepeatingAt(WClock_::time_point due_time, std::chrono::milliseconds period,
+                       std::function<void()> opt_callback = nullptr) override {
+-    return SetRepeatingAt(std::chrono::clock_cast<GClock_>(due_time), period,
+-                          std::move(opt_callback));
++    return SetRepeatingAt(ToSteady(due_time), period, std::move(opt_callback));
+   }
+   bool SetRepeatingAt(GClock_::time_point due_time, std::chrono::milliseconds period,
+                       std::function<void()> opt_callback = nullptr) override {
+@@ -1341,6 +1394,25 @@
+     handle_.Cancel();
+     return true;
+   }
++
++ private:
++  // A FILETIME due time as a steady_clock time point. NT timers take absolute times, and one
++  // in the past fires at once: games pass 0 (year 1601) to start a periodic timer now. Through
++  // clock_cast that is about -1.3e19 ns from now, which overflows steady_clock's int64
++  // nanoseconds and wraps ~160 years into the future, so the timer never fired.
++  static GClock_::time_point ToSteady(WClock_::time_point due_time) {
++    const auto steady_now = GClock_::now();
++    auto delta = due_time - WClock_::now();  // 100 ns units: no overflow for any FILETIME
++    if (delta.count() <= 0) {
++      return steady_now;
++    }
++    constexpr auto kMaxDelta = std::chrono::duration_cast<WClock_::duration>(
++        std::chrono::hours(24 * 365 * 100));
++    if (delta > kMaxDelta) {
++      delta = kMaxDelta;
++    }
++    return steady_now + std::chrono::duration_cast<GClock_::duration>(delta);
++  }
+ };
+ 
+ std::unique_ptr<Timer> Timer::CreateManualResetTimer() {
+@@ -1449,6 +1521,7 @@
+     thread->handle_.exit_code_ = 0;
+     thread->handle_.signaled_ = true;
+     thread->handle_.cond_.notify_all();
++    NotifyMultiWaiters();
+   }
+ 
+   current_thread_ = nullptr;
+--- a/src/input/input_system.cpp
++++ b/src/input/input_system.cpp
+@@ -137,6 +137,23 @@
+     fresh[i] = false;
+   }
+ 
++  // Guest user 0 must not stay empty while a physical pad is connected. Android announces a
++  // USB pad twice at start (its own input device, then SDL's HIDAPI device, after which SDL
++  // drops the first): the pad that stays held ordinal 1 and the game, which reads user 0, saw
++  // nothing until it was plugged in again. Shift the physical ordinals down so the lowest is 0.
++  {
++    uint32_t lowest = kSyntheticOrdinal;
++    for (const auto& d : seen) {
++      if (!d.synthetic) lowest = std::min(lowest, d.ordinal);
++    }
++    if (lowest != kSyntheticOrdinal && lowest > 0) {
++      for (auto& d : seen) {
++        if (!d.synthetic) d.ordinal -= lowest;
++      }
++      changed = true;
++    }
++  }
++
+   for (const auto& old : devices_) {
+     if (std::none_of(seen.begin(), seen.end(),
+                      [&](const DeviceInfo& d) { return d.id == old.id; })) {
+--- a/src/system/gpu_plugin_loader.cpp
++++ b/src/system/gpu_plugin_loader.cpp
+@@ -55,8 +55,18 @@
+ }  // namespace
+ 
+ std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name, std::string_view backend) {
++#if REX_PLATFORM_ANDROID
++  // Next to librexruntime.so in the APK's native library directory (extracted libraries); with
++  // libraries kept inside the APK, the bare name resolves through the app's linker namespace.
++  auto path = rex::filesystem::GetExecutablePath().parent_path() / PluginFileName(name);
++  if (!std::filesystem::exists(path)) {
++    path = PluginFileName(name);
++  }
++  if (false) {
++#else
+   auto path = rex::filesystem::GetExecutableFolder() / PluginFileName(name);
+   if (!std::filesystem::exists(path)) {
++#endif
+     REXSYS_ERROR(
+         "GPU plugin '{}' not found at {}. Stage it next to the executable "
+         "(GPU_PLUGINS {} in rexglue_configure_target).",
+--- a/src/system/mmio_handler.cpp
++++ b/src/system/mmio_handler.cpp
+@@ -406,13 +406,24 @@
+     // clears the watch we just hit).
+     // Do this under the lock so we don't introduce another race condition.
+     auto lock = global_critical_region_.Acquire();
+-    memory::PageAccess cur_access;
+-    size_t page_length = memory::page_size();
+-    memory::QueryProtect(fault_host_address, page_length, cur_access);
+-    if (cur_access != memory::PageAccess::kNoAccess &&
+-        (!is_write || cur_access != memory::PageAccess::kReadOnly)) {
+-      // Another thread has cleared this watch. Abort.
+-      return true;
++#if REX_PLATFORM_LINUX
++    // QueryProtect parses all of /proc/self/maps here (milliseconds with many watched ranges,
++    // under the global lock and the kernel's mm lock). For a write the callback needs no OS
++    // query: a watch another thread already cleared finds nothing watched in TriggerCallbacks
++    // and the stale-protection path restores write access from the guest page table.
++    bool recheck = !is_write || !access_violation_callback_;
++#else
++    bool recheck = true;
++#endif
++    if (recheck) {
++      memory::PageAccess cur_access;
++      size_t page_length = memory::page_size();
++      memory::QueryProtect(fault_host_address, page_length, cur_access);
++      if (cur_access != memory::PageAccess::kNoAccess &&
++          (!is_write || cur_access != memory::PageAccess::kReadOnly)) {
++        // Another thread has cleared this watch. Abort.
++        return true;
++      }
+     }
+     // The address is not found within any range, so either a write watch or an
+     // actual access violation.
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -28,6 +28,44 @@
+ #include <rex/system/function_dispatcher.h>
+ #include <rex/system/mmio_handler.h>
+ #include <rex/system/xmemory.h>
++
++#if REX_PLATFORM_ANDROID
++#include <sys/mman.h>
++#ifndef MAP_FIXED_NOREPLACE
++#define MAP_FIXED_NOREPLACE 0x100000
++#endif
++namespace {
++// Android: the views are mapped with MAP_FIXED, which would silently replace whatever an app
++// process already has at a candidate base (ART, the allocator, ...). Reserve the whole guest
++// range first without replacing anything (MAP_FIXED_NOREPLACE; kernels before 4.17 treat it as
++// a hint, so the address is checked too); the views then replace only this reservation.
++constexpr size_t kAndroidGuestRangeSize = 0x120000000ull;
++bool AndroidReserveGuestRange(uint8_t* base) {
++  void* p = mmap(base, kAndroidGuestRangeSize, PROT_NONE,
++                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
++  if (p == MAP_FAILED) return false;
++  if (p != base) {
++    munmap(p, kAndroidGuestRangeSize);
++    return false;
++  }
++  return true;
++}
++// Fallback: a 4 GB-aligned free range wherever the kernel finds one.
++uint8_t* AndroidFindAlignedGuestRange() {
++  const size_t align = 0x100000000ull;
++  void* p = mmap(nullptr, kAndroidGuestRangeSize + align, PROT_NONE,
++                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
++  if (p == MAP_FAILED) return nullptr;
++  uintptr_t start = reinterpret_cast<uintptr_t>(p);
++  uintptr_t aligned = (start + align - 1) & ~uintptr_t(align - 1);
++  if (aligned > start) munmap(p, aligned - start);
++  uintptr_t end = start + kAndroidGuestRangeSize + align;
++  uintptr_t used_end = aligned + kAndroidGuestRangeSize;
++  if (end > used_end) munmap(reinterpret_cast<void*>(used_end), end - used_end);
++  return reinterpret_cast<uint8_t*>(aligned);
++}
++}  // namespace
++#endif
+ #include <rex/thread.h>
+ 
+ // TODO(benvanik): move xbox.h out
+@@ -163,11 +201,34 @@
+   mapping_base_ = 0;
+   for (size_t n = 32; n < 64; n++) {
+     auto mapping_base = reinterpret_cast<uint8_t*>(1ull << n);
++#if REX_PLATFORM_ANDROID
++    if (!AndroidReserveGuestRange(mapping_base)) {
++      continue;
++    }
++    if (MapViews(mapping_base)) {
++      munmap(mapping_base, kAndroidGuestRangeSize);
++      continue;
++    }
++    mapping_base_ = mapping_base;
++    break;
++#else
+     if (!MapViews(mapping_base)) {
+       mapping_base_ = mapping_base;
+       break;
+     }
++#endif
+   }
++#if REX_PLATFORM_ANDROID
++  if (!mapping_base_) {
++    if (uint8_t* mapping_base = AndroidFindAlignedGuestRange()) {
++      if (!MapViews(mapping_base)) {
++        mapping_base_ = mapping_base;
++      } else {
++        munmap(mapping_base, kAndroidGuestRangeSize);
++      }
++    }
++  }
++#endif
+   if (!mapping_base_) {
+     REXSYS_ERROR("Unable to find a continuous block in the 64bit address space.");
+     assert_always();
+@@ -609,6 +670,10 @@
+           reinterpret_cast<uintptr_t>(host_address) & ~(uintptr_t(host_page_size - 1));
+       if (rex::memory::Protect(reinterpret_cast<void*>(page_base), host_page_size,
+                                rex::memory::PageAccess::kReadWrite, nullptr)) {
++        // Also the normal outcome of a write racing another thread's unwatch (Linux skips the
++        // /proc recheck in the fault handler), so only the first few are logged.
++        static std::atomic<uint32_t> recovered_logged{0};
++        if (recovered_logged.fetch_add(1, std::memory_order_relaxed) < 16)
+         REXSYS_WARN(
+             "Recovered stale physical page protection for guest {:08X} (host {:016X}, "
+             "guest_protect {:08X})",
+--- a/src/ui/CMakeLists.txt
++++ b/src/ui/CMakeLists.txt
+@@ -72,6 +72,10 @@
+     set(REXUI_PLATFORM_SOURCES
+         surface_mac.cpp
+     )
++elseif(ANDROID)
++    set(REXUI_PLATFORM_SOURCES
++        surface_android.cpp
++    )
+ else()
+     set(REXUI_PLATFORM_SOURCES
+         surface_gnulinux.cpp
+@@ -146,7 +150,9 @@
+ endif()
+ 
+ # Platform-specific dependencies
+-if(UNIX AND NOT APPLE)
++if(ANDROID)
++    target_link_libraries(rexui PUBLIC android log)
++elseif(UNIX AND NOT APPLE)
+     find_package(PkgConfig REQUIRED)
+     pkg_check_modules(X11_XCB REQUIRED x11-xcb)
+     # Required, not optional: vulkan/api.h pulls in <wayland-client.h> on every
+--- a/src/ui/shaders/sgsr/LICENSE_SGSR.txt
++++ b/src/ui/shaders/sgsr/LICENSE_SGSR.txt
+@@ -0,0 +1,29 @@
++Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
++
++Redistribution and use in source and binary forms, with or without
++modification, are permitted provided that the following conditions are met:
++
++1. Redistributions of source code must retain the above copyright notice,
++   this list of conditions and the following disclaimer.
++
++2. Redistributions in binary form must reproduce the above copyright notice,
++   this list of conditions and the following disclaimer in the documentation
++   and/or other materials provided with the distribution.
++
++3. Neither the name of the copyright holder nor the names of its contributors
++   may be used to endorse or promote products derived from this software
++   without specific prior written permission.
++
++THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++POSSIBILITY OF SUCH DAMAGE.
++
++SPDX-License-Identifier: BSD-3-Clause
+\ No newline at end of file
+--- a/src/ui/shaders/sgsr/guest_output_sgsr1.frag
++++ b/src/ui/shaders/sgsr/guest_output_sgsr1.frag
+@@ -0,0 +1,118 @@
++#version 450
++//============================================================================================================
++//
++//                  Copyright (c) 2025, Qualcomm Innovation Center, Inc. All rights reserved.
++//                              SPDX-License-Identifier: BSD-3-Clause
++//
++// Snapdragon Game Super Resolution 1 (sgsr/v1/include/glsl/sgsr1_shader_mobile.frag from
++// https://github.com/SnapdragonStudios/snapdragon-gsr, commit d926f074), RGBA mode, edge threshold
++// 8/255, edge sharpness 2. The filter is Qualcomm's, unchanged; only the inputs are adapted to the
++// presenter's bilinear pass (same descriptors and push constants, so it can stand in for it):
++// the texture coordinate comes from the pixel position, ViewportInfo from the texture size, and
++// "highp vec2(...)" constructors are plain "vec2(...)" (GLSL 4.50 has no precision on constructors;
++// the operands are highp already).
++// Built with: glslangValidator -V guest_output_sgsr1.frag (see the generated header).
++//============================================================================================================
++
++precision mediump float;
++precision highp int;
++
++#define EdgeThreshold 8.0/255.0
++#define EdgeSharpness 2.0
++const int mode = 1;  // RGBA: green as luma
++
++layout(push_constant) uniform XeBilinearConstants {
++  layout(offset = 16) ivec2 xe_bilinear_output_offset;
++  layout(offset = 24) vec2 xe_bilinear_output_size_inv;
++};
++layout(set = 0, binding = 0) uniform mediump texture2D xe_texture;
++layout(set = 0, binding = 1) uniform sampler xe_sampler_linear_clamp;
++
++layout(location = 0) out vec4 out_Target0;
++
++float fastLanczos2(float x)
++{
++	float wA = x-4.0;
++	float wB = x*wA-wA;
++	wA *= wA;
++	return wB*wA;
++}
++vec2 weightY(float dx, float dy,float c, float std)
++{
++	float x = ((dx*dx)+(dy* dy))* 0.55 + clamp(abs(c)*std, 0.0, 1.0);
++	float w = fastLanczos2(x);
++	return vec2(w, w * c);
++}
++
++void main()
++{
++	highp vec2 inSize = vec2(textureSize(sampler2D(xe_texture, xe_sampler_linear_clamp), 0));
++	highp vec4 ViewportInfo0 = vec4(1.0 / inSize, inSize);
++	highp ivec2 pixel = ivec2(gl_FragCoord.xy) - xe_bilinear_output_offset;
++	highp vec4 in_TEXCOORD0 = vec4((vec2(pixel) + 0.5) * xe_bilinear_output_size_inv, 0.0, 0.0);
++
++	float edgeThreshold = EdgeThreshold;
++	float edgeSharpness = EdgeSharpness;
++
++	vec4 color;
++	color.xyz = textureLod(sampler2D(xe_texture, xe_sampler_linear_clamp),in_TEXCOORD0.xy,0.0).xyz;
++
++	{
++		highp vec2 imgCoord = ((in_TEXCOORD0.xy*ViewportInfo0.zw)+vec2(-0.5,0.5));
++		highp vec2 imgCoordPixel = floor(imgCoord);
++		highp vec2 coord = (imgCoordPixel*ViewportInfo0.xy);
++		vec2 pl = (imgCoord+(-imgCoordPixel));
++		vec4  left = textureGather(sampler2D(xe_texture, xe_sampler_linear_clamp),coord, mode);
++
++		float edgeVote = abs(left.z - left.y) + abs(color[mode] - left.y)  + abs(color[mode] - left.z) ;
++		if(edgeVote > edgeThreshold)
++		{
++			coord.x += ViewportInfo0.x;
++
++			vec4 right = textureGather(sampler2D(xe_texture, xe_sampler_linear_clamp),coord + vec2(ViewportInfo0.x, 0.0), mode);
++			vec4 upDown;
++			upDown.xy = textureGather(sampler2D(xe_texture, xe_sampler_linear_clamp),coord + vec2(0.0, -ViewportInfo0.y),mode).wz;
++			upDown.zw  = textureGather(sampler2D(xe_texture, xe_sampler_linear_clamp),coord+ vec2(0.0, ViewportInfo0.y), mode).yx;
++
++			float mean = (left.y+left.z+right.x+right.w)*0.25;
++			left = left - vec4(mean);
++			right = right - vec4(mean);
++			upDown = upDown - vec4(mean);
++			color.w =color[mode] - mean;
++
++			float sum = (((((abs(left.x)+abs(left.y))+abs(left.z))+abs(left.w))+(((abs(right.x)+abs(right.y))+abs(right.z))+abs(right.w)))+(((abs(upDown.x)+abs(upDown.y))+abs(upDown.z))+abs(upDown.w)));
++			float std = 2.181818/sum;
++
++			vec2 aWY = weightY(pl.x, pl.y+1.0, upDown.x,std);
++			aWY += weightY(pl.x-1.0, pl.y+1.0, upDown.y,std);
++			aWY += weightY(pl.x-1.0, pl.y-2.0, upDown.z,std);
++			aWY += weightY(pl.x, pl.y-2.0, upDown.w,std);
++			aWY += weightY(pl.x+1.0, pl.y-1.0, left.x,std);
++			aWY += weightY(pl.x, pl.y-1.0, left.y,std);
++			aWY += weightY(pl.x, pl.y, left.z,std);
++			aWY += weightY(pl.x+1.0, pl.y, left.w,std);
++			aWY += weightY(pl.x-1.0, pl.y-1.0, right.x,std);
++			aWY += weightY(pl.x-2.0, pl.y-1.0, right.y,std);
++			aWY += weightY(pl.x-2.0, pl.y, right.z,std);
++			aWY += weightY(pl.x-1.0, pl.y, right.w,std);
++
++			float finalY = aWY.y/aWY.x;
++
++			float maxY = max(max(left.y,left.z),max(right.x,right.w));
++			float minY = min(min(left.y,left.z),min(right.x,right.w));
++			finalY = clamp(edgeSharpness*finalY, minY, maxY);
++
++			float deltaY = finalY -color.w;
++
++			//smooth high contrast input
++			deltaY = clamp(deltaY, -23.0 / 255.0, 23.0 / 255.0);
++
++			color.x = clamp((color.x+deltaY),0.0,1.0);
++			color.y = clamp((color.y+deltaY),0.0,1.0);
++			color.z = clamp((color.z+deltaY),0.0,1.0);
++		}
++	}
++
++	color.w = 1.0;  //assume alpha channel is not used
++	out_Target0.xyzw = color;
++}
+--- a/src/ui/shaders/vulkan_spirv/guest_output_sgsr1_ps.h
++++ b/src/ui/shaders/vulkan_spirv/guest_output_sgsr1_ps.h
+@@ -0,0 +1,567 @@
++// Snapdragon Game Super Resolution 1 (BSD-3-Clause, Qualcomm; see ../sgsr/LICENSE_SGSR.txt).
++// Generated from ../sgsr/guest_output_sgsr1.frag with: glslangValidator -V --target-env vulkan1.0
++const uint32_t guest_output_sgsr1_ps[] = {
++    0x07230203, 0x00010000, 0x0008000B, 0x00000247, 0x00000000, 0x00020011, 0x00000001, 0x00020011,
++    0x00000032, 0x0006000B, 0x00000001, 0x4C534C47, 0x6474732E, 0x3035342E, 0x00000000, 0x0003000E,
++    0x00000000, 0x00000001, 0x0007000F, 0x00000004, 0x00000004, 0x6E69616D, 0x00000000, 0x00000064,
++    0x00000245, 0x00030010, 0x00000004, 0x00000007, 0x00030003, 0x00000002, 0x000001C2, 0x00040005,
++    0x00000004, 0x6E69616D, 0x00000000, 0x00070005, 0x0000000A, 0x74736166, 0x636E614C, 0x32736F7A,
++    0x3B316628, 0x00000000, 0x00030005, 0x00000009, 0x00000078, 0x00080005, 0x00000012, 0x67696577,
++    0x28597468, 0x663B3166, 0x31663B31, 0x3B31663B, 0x00000000, 0x00030005, 0x0000000E, 0x00007864,
++    0x00030005, 0x0000000F, 0x00007964, 0x00030005, 0x00000010, 0x00000063, 0x00030005, 0x00000011,
++    0x00647473, 0x00030005, 0x00000014, 0x00004177, 0x00030005, 0x00000018, 0x00004277, 0x00030005,
++    0x00000026, 0x00000078, 0x00030005, 0x00000038, 0x00000077, 0x00040005, 0x00000039, 0x61726170,
++    0x0000006D, 0x00040005, 0x00000044, 0x69536E69, 0x0000657A, 0x00050005, 0x00000047, 0x745F6578,
++    0x75747865, 0x00006572, 0x00080005, 0x0000004B, 0x735F6578, 0x6C706D61, 0x6C5F7265, 0x61656E69,
++    0x6C635F72, 0x00706D61, 0x00060005, 0x00000057, 0x77656956, 0x74726F70, 0x6F666E49, 0x00000030,
++    0x00040005, 0x00000062, 0x65786970, 0x0000006C, 0x00060005, 0x00000064, 0x465F6C67, 0x43676172,
++    0x64726F6F, 0x00000000, 0x00070005, 0x00000068, 0x69426558, 0x656E696C, 0x6F437261, 0x6174736E,
++    0x0073746E, 0x000A0006, 0x00000068, 0x00000000, 0x625F6578, 0x6E696C69, 0x5F726165, 0x7074756F,
++    0x6F5F7475, 0x65736666, 0x00000074, 0x000A0006, 0x00000068, 0x00000001, 0x625F6578, 0x6E696C69,
++    0x5F726165, 0x7074756F, 0x735F7475, 0x5F657A69, 0x00766E69, 0x00030005, 0x0000006A, 0x00000000,
++    0x00060005, 0x0000006F, 0x545F6E69, 0x4F435845, 0x3044524F, 0x00000000, 0x00060005, 0x0000007D,
++    0x65676465, 0x65726854, 0x6C6F6873, 0x00000064, 0x00060005, 0x0000007F, 0x65676465, 0x72616853,
++    0x73656E70, 0x00000073, 0x00040005, 0x00000081, 0x6F6C6F63, 0x00000072, 0x00050005, 0x00000094,
++    0x43676D69, 0x64726F6F, 0x00000000, 0x00060005, 0x0000009D, 0x43676D69, 0x64726F6F, 0x65786950,
++    0x0000006C, 0x00040005, 0x000000A0, 0x726F6F63, 0x00000064, 0x00030005, 0x000000A5, 0x00006C70,
++    0x00040005, 0x000000AA, 0x7466656C, 0x00000000, 0x00050005, 0x000000B0, 0x65676465, 0x65746F56,
++    0x00000000, 0x00040005, 0x000000D1, 0x68676972, 0x00000074, 0x00040005, 0x000000DB, 0x6F447075,
++    0x00006E77, 0x00040005, 0x000000FA, 0x6E61656D, 0x00000000, 0x00030005, 0x00000119, 0x006D7573,
++    0x00030005, 0x00000149, 0x00647473, 0x00030005, 0x0000014D, 0x00595761, 0x00040005, 0x00000151,
++    0x61726170, 0x0000006D, 0x00040005, 0x00000154, 0x61726170, 0x0000006D, 0x00040005, 0x00000155,
++    0x61726170, 0x0000006D, 0x00040005, 0x00000158, 0x61726170, 0x0000006D, 0x00040005, 0x00000161,
++    0x61726170, 0x0000006D, 0x00040005, 0x00000162, 0x61726170, 0x0000006D, 0x00040005, 0x00000163,
++    0x61726170, 0x0000006D, 0x00040005, 0x00000166, 0x61726170, 0x0000006D, 0x00040005, 0x00000171,
++    0x61726170, 0x0000006D, 0x00040005, 0x00000172, 0x61726170, 0x0000006D, 0x00040005, 0x00000173,
++    0x61726170, 0x0000006D, 0x00040005, 0x00000176, 0x61726170, 0x0000006D, 0x00040005, 0x0000017E,
++    0x61726170, 0x0000006D, 0x00040005, 0x00000181, 0x61726170, 0x0000006D, 0x00040005, 0x00000182,
++    0x61726170, 0x0000006D, 0x00040005, 0x00000185, 0x61726170, 0x0000006D, 0x00040005, 0x00000190,
++    0x61726170, 0x0000006D, 0x00040005, 0x00000191, 0x61726170, 0x0000006D, 0x00040005, 0x00000192,
++    0x61726170, 0x0000006D, 0x00040005, 0x00000195, 0x61726170, 0x0000006D, 0x00040005, 0x0000019D,
++    0x61726170, 0x0000006D, 0x00040005, 0x000001A0, 0x61726170, 0x0000006D, 0x00040005, 0x000001A1,
++    0x61726170, 0x0000006D, 0x00040005, 0x000001A4, 0x61726170, 0x0000006D, 0x00040005, 0x000001A9,
++    0x61726170, 0x0000006D, 0x00040005, 0x000001AC, 0x61726170, 0x0000006D, 0x00040005, 0x000001AF,
++    0x61726170, 0x0000006D, 0x00040005, 0x000001B2, 0x61726170, 0x0000006D, 0x00040005, 0x000001BA,
++    0x61726170, 0x0000006D, 0x00040005, 0x000001BB, 0x61726170, 0x0000006D, 0x00040005, 0x000001BE,
++    0x61726170, 0x0000006D, 0x00040005, 0x000001C1, 0x61726170, 0x0000006D, 0x00040005, 0x000001CC,
++    0x61726170, 0x0000006D, 0x00040005, 0x000001CD, 0x61726170, 0x0000006D, 0x00040005, 0x000001CE,
++    0x61726170, 0x0000006D, 0x00040005, 0x000001D1, 0x61726170, 0x0000006D, 0x00040005, 0x000001DC,
++    0x61726170, 0x0000006D, 0x00040005, 0x000001DD, 0x61726170, 0x0000006D, 0x00040005, 0x000001DE,
++    0x61726170, 0x0000006D, 0x00040005, 0x000001E1, 0x61726170, 0x0000006D, 0x00040005, 0x000001E9,
++    0x61726170, 0x0000006D, 0x00040005, 0x000001EA, 0x61726170, 0x0000006D, 0x00040005, 0x000001ED,
++    0x61726170, 0x0000006D, 0x00040005, 0x000001F0, 0x61726170, 0x0000006D, 0x00040005, 0x000001F8,
++    0x61726170, 0x0000006D, 0x00040005, 0x000001F9, 0x61726170, 0x0000006D, 0x00040005, 0x000001FC,
++    0x61726170, 0x0000006D, 0x00040005, 0x000001FF, 0x61726170, 0x0000006D, 0x00040005, 0x00000204,
++    0x616E6966, 0x0000596C, 0x00040005, 0x0000020A, 0x5978616D, 0x00000000, 0x00040005, 0x00000216,
++    0x596E696D, 0x00000000, 0x00040005, 0x00000228, 0x746C6564, 0x00005961, 0x00050005, 0x00000245,
++    0x5F74756F, 0x67726154, 0x00307465, 0x00030047, 0x00000009, 0x00000000, 0x00030047, 0x0000000A,
++    0x00000000, 0x00030047, 0x0000000E, 0x00000000, 0x00030047, 0x0000000F, 0x00000000, 0x00030047,
++    0x00000010, 0x00000000, 0x00030047, 0x00000011, 0x00000000, 0x00030047, 0x00000012, 0x00000000,
++    0x00030047, 0x00000014, 0x00000000, 0x00030047, 0x00000015, 0x00000000, 0x00030047, 0x00000017,
++    0x00000000, 0x00030047, 0x00000018, 0x00000000, 0x00030047, 0x00000019, 0x00000000, 0x00030047,
++    0x0000001A, 0x00000000, 0x00030047, 0x0000001B, 0x00000000, 0x00030047, 0x0000001C, 0x00000000,
++    0x00030047, 0x0000001D, 0x00000000, 0x00030047, 0x0000001E, 0x00000000, 0x00030047, 0x0000001F,
++    0x00000000, 0x00030047, 0x00000020, 0x00000000, 0x00030047, 0x00000021, 0x00000000, 0x00030047,
++    0x00000022, 0x00000000, 0x00030047, 0x00000023, 0x00000000, 0x00030047, 0x00000026, 0x00000000,
++    0x00030047, 0x00000027, 0x00000000, 0x00030047, 0x00000028, 0x00000000, 0x00030047, 0x00000029,
++    0x00000000, 0x00030047, 0x0000002A, 0x00000000, 0x00030047, 0x0000002B, 0x00000000, 0x00030047,
++    0x0000002C, 0x00000000, 0x00030047, 0x0000002D, 0x00000000, 0x00030047, 0x0000002F, 0x00000000,
++    0x00030047, 0x00000030, 0x00000000, 0x00030047, 0x00000031, 0x00000000, 0x00030047, 0x00000032,
++    0x00000000, 0x00030047, 0x00000033, 0x00000000, 0x00030047, 0x00000036, 0x00000000, 0x00030047,
++    0x00000037, 0x00000000, 0x00030047, 0x00000038, 0x00000000, 0x00030047, 0x00000039, 0x00000000,
++    0x00030047, 0x0000003A, 0x00000000, 0x00030047, 0x0000003B, 0x00000000, 0x00030047, 0x0000003C,
++    0x00000000, 0x00030047, 0x0000003D, 0x00000000, 0x00030047, 0x0000003E, 0x00000000, 0x00030047,
++    0x0000003F, 0x00000000, 0x00030047, 0x00000040, 0x00000000, 0x00030047, 0x00000047, 0x00000000,
++    0x00040047, 0x00000047, 0x00000021, 0x00000000, 0x00040047, 0x00000047, 0x00000022, 0x00000000,
++    0x00030047, 0x00000048, 0x00000000, 0x00040047, 0x0000004B, 0x00000021, 0x00000001, 0x00040047,
++    0x0000004B, 0x00000022, 0x00000000, 0x00040047, 0x00000064, 0x0000000B, 0x0000000F, 0x00030047,
++    0x00000068, 0x00000002, 0x00050048, 0x00000068, 0x00000000, 0x00000023, 0x00000010, 0x00040048,
++    0x00000068, 0x00000001, 0x00000000, 0x00050048, 0x00000068, 0x00000001, 0x00000023, 0x00000018,
++    0x00030047, 0x00000078, 0x00000000, 0x00030047, 0x0000007D, 0x00000000, 0x00030047, 0x0000007F,
++    0x00000000, 0x00030047, 0x00000081, 0x00000000, 0x00030047, 0x00000082, 0x00000000, 0x00030047,
++    0x00000087, 0x00000000, 0x00030047, 0x00000089, 0x00000000, 0x00030047, 0x000000A5, 0x00000000,
++    0x00030047, 0x000000AA, 0x00000000, 0x00030047, 0x000000AB, 0x00000000, 0x00030047, 0x000000AF,
++    0x00000000, 0x00030047, 0x000000B0, 0x00000000, 0x00030047, 0x000000B2, 0x00000000, 0x00030047,
++    0x000000B4, 0x00000000, 0x00030047, 0x000000B5, 0x00000000, 0x00030047, 0x000000B6, 0x00000000,
++    0x00030047, 0x000000B8, 0x00000000, 0x00030047, 0x000000BA, 0x00000000, 0x00030047, 0x000000BB,
++    0x00000000, 0x00030047, 0x000000BC, 0x00000000, 0x00030047, 0x000000BD, 0x00000000, 0x00030047,
++    0x000000BF, 0x00000000, 0x00030047, 0x000000C1, 0x00000000, 0x00030047, 0x000000C2, 0x00000000,
++    0x00030047, 0x000000C3, 0x00000000, 0x00030047, 0x000000C4, 0x00000000, 0x00030047, 0x000000C5,
++    0x00000000, 0x00030047, 0x000000C6, 0x00000000, 0x00030047, 0x000000D1, 0x00000000, 0x00030047,
++    0x000000D2, 0x00000000, 0x00030047, 0x000000DA, 0x00000000, 0x00030047, 0x000000DB, 0x00000000,
++    0x00030047, 0x000000DC, 0x00000000, 0x00030047, 0x000000E5, 0x00000000, 0x00030047, 0x000000E6,
++    0x00000000, 0x00030047, 0x000000EB, 0x00000000, 0x00030047, 0x000000F3, 0x00000000, 0x00030047,
++    0x000000F4, 0x00000000, 0x00030047, 0x000000FA, 0x00000000, 0x00030047, 0x000000FC, 0x00000000,
++    0x00030047, 0x000000FE, 0x00000000, 0x00030047, 0x000000FF, 0x00000000, 0x00030047, 0x00000101,
++    0x00000000, 0x00030047, 0x00000102, 0x00000000, 0x00030047, 0x00000104, 0x00000000, 0x00030047,
++    0x00000105, 0x00000000, 0x00030047, 0x00000107, 0x00000000, 0x00030047, 0x00000108, 0x00000000,
++    0x00030047, 0x00000109, 0x00000000, 0x00030047, 0x0000010A, 0x00000000, 0x00030047, 0x0000010B,
++    0x00000000, 0x00030047, 0x0000010C, 0x00000000, 0x00030047, 0x0000010D, 0x00000000, 0x00030047,
++    0x0000010E, 0x00000000, 0x00030047, 0x0000010F, 0x00000000, 0x00030047, 0x00000110, 0x00000000,
++    0x00030047, 0x00000111, 0x00000000, 0x00030047, 0x00000112, 0x00000000, 0x00030047, 0x00000113,
++    0x00000000, 0x00030047, 0x00000115, 0x00000000, 0x00030047, 0x00000116, 0x00000000, 0x00030047,
++    0x00000117, 0x00000000, 0x00030047, 0x00000119, 0x00000000, 0x00030047, 0x0000011B, 0x00000000,
++    0x00030047, 0x0000011C, 0x00000000, 0x00030047, 0x0000011E, 0x00000000, 0x00030047, 0x0000011F,
++    0x00000000, 0x00030047, 0x00000120, 0x00000000, 0x00030047, 0x00000122, 0x00000000, 0x00030047,
++    0x00000123, 0x00000000, 0x00030047, 0x00000124, 0x00000000, 0x00030047, 0x00000126, 0x00000000,
++    0x00030047, 0x00000127, 0x00000000, 0x00030047, 0x00000128, 0x00000000, 0x00030047, 0x0000012A,
++    0x00000000, 0x00030047, 0x0000012B, 0x00000000, 0x00030047, 0x0000012D, 0x00000000, 0x00030047,
++    0x0000012E, 0x00000000, 0x00030047, 0x0000012F, 0x00000000, 0x00030047, 0x00000131, 0x00000000,
++    0x00030047, 0x00000132, 0x00000000, 0x00030047, 0x00000133, 0x00000000, 0x00030047, 0x00000135,
++    0x00000000, 0x00030047, 0x00000136, 0x00000000, 0x00030047, 0x00000137, 0x00000000, 0x00030047,
++    0x00000138, 0x00000000, 0x00030047, 0x0000013A, 0x00000000, 0x00030047, 0x0000013B, 0x00000000,
++    0x00030047, 0x0000013D, 0x00000000, 0x00030047, 0x0000013E, 0x00000000, 0x00030047, 0x0000013F,
++    0x00000000, 0x00030047, 0x00000141, 0x00000000, 0x00030047, 0x00000142, 0x00000000, 0x00030047,
++    0x00000143, 0x00000000, 0x00030047, 0x00000145, 0x00000000, 0x00030047, 0x00000146, 0x00000000,
++    0x00030047, 0x00000147, 0x00000000, 0x00030047, 0x00000148, 0x00000000, 0x00030047, 0x00000149,
++    0x00000000, 0x00030047, 0x0000014B, 0x00000000, 0x00030047, 0x0000014C, 0x00000000, 0x00030047,
++    0x0000014D, 0x00000000, 0x00030047, 0x0000014F, 0x00000000, 0x00030047, 0x00000150, 0x00000000,
++    0x00030047, 0x00000151, 0x00000000, 0x00030047, 0x00000153, 0x00000000, 0x00030047, 0x00000154,
++    0x00000000, 0x00030047, 0x00000155, 0x00000000, 0x00030047, 0x00000157, 0x00000000, 0x00030047,
++    0x00000158, 0x00000000, 0x00030047, 0x00000159, 0x00000000, 0x00030047, 0x0000015A, 0x00000000,
++    0x00030047, 0x0000015C, 0x00000000, 0x00030047, 0x0000015D, 0x00000000, 0x00030047, 0x0000015F,
++    0x00000000, 0x00030047, 0x00000160, 0x00000000, 0x00030047, 0x00000161, 0x00000000, 0x00030047,
++    0x00000162, 0x00000000, 0x00030047, 0x00000163, 0x00000000, 0x00030047, 0x00000165, 0x00000000,
++    0x00030047, 0x00000166, 0x00000000, 0x00030047, 0x00000167, 0x00000000, 0x00030047, 0x00000168,
++    0x00000000, 0x00030047, 0x00000169, 0x00000000, 0x00030047, 0x0000016A, 0x00000000, 0x00030047,
++    0x0000016C, 0x00000000, 0x00030047, 0x0000016D, 0x00000000, 0x00030047, 0x0000016F, 0x00000000,
++    0x00030047, 0x00000170, 0x00000000, 0x00030047, 0x00000171, 0x00000000, 0x00030047, 0x00000172,
++    0x00000000, 0x00030047, 0x00000173, 0x00000000, 0x00030047, 0x00000175, 0x00000000, 0x00030047,
++    0x00000176, 0x00000000, 0x00030047, 0x00000177, 0x00000000, 0x00030047, 0x00000178, 0x00000000,
++    0x00030047, 0x00000179, 0x00000000, 0x00030047, 0x0000017A, 0x00000000, 0x00030047, 0x0000017C,
++    0x00000000, 0x00030047, 0x0000017D, 0x00000000, 0x00030047, 0x0000017E, 0x00000000, 0x00030047,
++    0x00000180, 0x00000000, 0x00030047, 0x00000181, 0x00000000, 0x00030047, 0x00000182, 0x00000000,
++    0x00030047, 0x00000184, 0x00000000, 0x00030047, 0x00000185, 0x00000000, 0x00030047, 0x00000186,
++    0x00000000, 0x00030047, 0x00000187, 0x00000000, 0x00030047, 0x00000188, 0x00000000, 0x00030047,
++    0x00000189, 0x00000000, 0x00030047, 0x0000018B, 0x00000000, 0x00030047, 0x0000018C, 0x00000000,
++    0x00030047, 0x0000018E, 0x00000000, 0x00030047, 0x0000018F, 0x00000000, 0x00030047, 0x00000190,
++    0x00000000, 0x00030047, 0x00000191, 0x00000000, 0x00030047, 0x00000192, 0x00000000, 0x00030047,
++    0x00000194, 0x00000000, 0x00030047, 0x00000195, 0x00000000, 0x00030047, 0x00000196, 0x00000000,
++    0x00030047, 0x00000197, 0x00000000, 0x00030047, 0x00000198, 0x00000000, 0x00030047, 0x00000199,
++    0x00000000, 0x00030047, 0x0000019B, 0x00000000, 0x00030047, 0x0000019C, 0x00000000, 0x00030047,
++    0x0000019D, 0x00000000, 0x00030047, 0x0000019F, 0x00000000, 0x00030047, 0x000001A0, 0x00000000,
++    0x00030047, 0x000001A1, 0x00000000, 0x00030047, 0x000001A3, 0x00000000, 0x00030047, 0x000001A4,
++    0x00000000, 0x00030047, 0x000001A5, 0x00000000, 0x00030047, 0x000001A6, 0x00000000, 0x00030047,
++    0x000001A7, 0x00000000, 0x00030047, 0x000001A8, 0x00000000, 0x00030047, 0x000001A9, 0x00000000,
++    0x00030047, 0x000001AB, 0x00000000, 0x00030047, 0x000001AC, 0x00000000, 0x00030047, 0x000001AE,
++    0x00000000, 0x00030047, 0x000001AF, 0x00000000, 0x00030047, 0x000001B1, 0x00000000, 0x00030047,
++    0x000001B2, 0x00000000, 0x00030047, 0x000001B3, 0x00000000, 0x00030047, 0x000001B4, 0x00000000,
++    0x00030047, 0x000001B5, 0x00000000, 0x00030047, 0x000001B6, 0x00000000, 0x00030047, 0x000001B8,
++    0x00000000, 0x00030047, 0x000001B9, 0x00000000, 0x00030047, 0x000001BA, 0x00000000, 0x00030047,
++    0x000001BB, 0x00000000, 0x00030047, 0x000001BD, 0x00000000, 0x00030047, 0x000001BE, 0x00000000,
++    0x00030047, 0x000001C0, 0x00000000, 0x00030047, 0x000001C1, 0x00000000, 0x00030047, 0x000001C2,
++    0x00000000, 0x00030047, 0x000001C3, 0x00000000, 0x00030047, 0x000001C4, 0x00000000, 0x00030047,
++    0x000001C5, 0x00000000, 0x00030047, 0x000001C7, 0x00000000, 0x00030047, 0x000001C8, 0x00000000,
++    0x00030047, 0x000001CA, 0x00000000, 0x00030047, 0x000001CB, 0x00000000, 0x00030047, 0x000001CC,
++    0x00000000, 0x00030047, 0x000001CD, 0x00000000, 0x00030047, 0x000001CE, 0x00000000, 0x00030047,
++    0x000001D0, 0x00000000, 0x00030047, 0x000001D1, 0x00000000, 0x00030047, 0x000001D2, 0x00000000,
++    0x00030047, 0x000001D3, 0x00000000, 0x00030047, 0x000001D4, 0x00000000, 0x00030047, 0x000001D5,
++    0x00000000, 0x00030047, 0x000001D7, 0x00000000, 0x00030047, 0x000001D8, 0x00000000, 0x00030047,
++    0x000001DA, 0x00000000, 0x00030047, 0x000001DB, 0x00000000, 0x00030047, 0x000001DC, 0x00000000,
++    0x00030047, 0x000001DD, 0x00000000, 0x00030047, 0x000001DE, 0x00000000, 0x00030047, 0x000001E0,
++    0x00000000, 0x00030047, 0x000001E1, 0x00000000, 0x00030047, 0x000001E2, 0x00000000, 0x00030047,
++    0x000001E3, 0x00000000, 0x00030047, 0x000001E4, 0x00000000, 0x00030047, 0x000001E5, 0x00000000,
++    0x00030047, 0x000001E7, 0x00000000, 0x00030047, 0x000001E8, 0x00000000, 0x00030047, 0x000001E9,
++    0x00000000, 0x00030047, 0x000001EA, 0x00000000, 0x00030047, 0x000001EC, 0x00000000, 0x00030047,
++    0x000001ED, 0x00000000, 0x00030047, 0x000001EF, 0x00000000, 0x00030047, 0x000001F0, 0x00000000,
++    0x00030047, 0x000001F1, 0x00000000, 0x00030047, 0x000001F2, 0x00000000, 0x00030047, 0x000001F3,
++    0x00000000, 0x00030047, 0x000001F4, 0x00000000, 0x00030047, 0x000001F6, 0x00000000, 0x00030047,
++    0x000001F7, 0x00000000, 0x00030047, 0x000001F8, 0x00000000, 0x00030047, 0x000001F9, 0x00000000,
++    0x00030047, 0x000001FB, 0x00000000, 0x00030047, 0x000001FC, 0x00000000, 0x00030047, 0x000001FE,
++    0x00000000, 0x00030047, 0x000001FF, 0x00000000, 0x00030047, 0x00000200, 0x00000000, 0x00030047,
++    0x00000201, 0x00000000, 0x00030047, 0x00000202, 0x00000000, 0x00030047, 0x00000203, 0x00000000,
++    0x00030047, 0x00000204, 0x00000000, 0x00030047, 0x00000206, 0x00000000, 0x00030047, 0x00000208,
++    0x00000000, 0x00030047, 0x00000209, 0x00000000, 0x00030047, 0x0000020A, 0x00000000, 0x00030047,
++    0x0000020C, 0x00000000, 0x00030047, 0x0000020E, 0x00000000, 0x00030047, 0x0000020F, 0x00000000,
++    0x00030047, 0x00000211, 0x00000000, 0x00030047, 0x00000213, 0x00000000, 0x00030047, 0x00000214,
++    0x00000000, 0x00030047, 0x00000215, 0x00000000, 0x00030047, 0x00000216, 0x00000000, 0x00030047,
++    0x00000218, 0x00000000, 0x00030047, 0x0000021A, 0x00000000, 0x00030047, 0x0000021B, 0x00000000,
++    0x00030047, 0x0000021D, 0x00000000, 0x00030047, 0x0000021F, 0x00000000, 0x00030047, 0x00000220,
++    0x00000000, 0x00030047, 0x00000221, 0x00000000, 0x00030047, 0x00000222, 0x00000000, 0x00030047,
++    0x00000223, 0x00000000, 0x00030047, 0x00000224, 0x00000000, 0x00030047, 0x00000225, 0x00000000,
++    0x00030047, 0x00000226, 0x00000000, 0x00030047, 0x00000227, 0x00000000, 0x00030047, 0x00000228,
++    0x00000000, 0x00030047, 0x00000229, 0x00000000, 0x00030047, 0x0000022B, 0x00000000, 0x00030047,
++    0x0000022C, 0x00000000, 0x00030047, 0x0000022D, 0x00000000, 0x00030047, 0x00000230, 0x00000000,
++    0x00030047, 0x00000232, 0x00000000, 0x00030047, 0x00000233, 0x00000000, 0x00030047, 0x00000234,
++    0x00000000, 0x00030047, 0x00000235, 0x00000000, 0x00030047, 0x00000238, 0x00000000, 0x00030047,
++    0x00000239, 0x00000000, 0x00030047, 0x0000023A, 0x00000000, 0x00030047, 0x0000023B, 0x00000000,
++    0x00030047, 0x0000023E, 0x00000000, 0x00030047, 0x0000023F, 0x00000000, 0x00030047, 0x00000240,
++    0x00000000, 0x00030047, 0x00000241, 0x00000000, 0x00030047, 0x00000245, 0x00000000, 0x00040047,
++    0x00000245, 0x0000001E, 0x00000000, 0x00030047, 0x00000246, 0x00000000, 0x00020013, 0x00000002,
++    0x00030021, 0x00000003, 0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040020, 0x00000007,
++    0x00000007, 0x00000006, 0x00040021, 0x00000008, 0x00000006, 0x00000007, 0x00040017, 0x0000000C,
++    0x00000006, 0x00000002, 0x00070021, 0x0000000D, 0x0000000C, 0x00000007, 0x00000007, 0x00000007,
++    0x00000007, 0x0004002B, 0x00000006, 0x00000016, 0x40800000, 0x0004002B, 0x00000006, 0x0000002E,
++    0x3F0CCCCD, 0x0004002B, 0x00000006, 0x00000034, 0x00000000, 0x0004002B, 0x00000006, 0x00000035,
++    0x3F800000, 0x00040020, 0x00000043, 0x00000007, 0x0000000C, 0x00090019, 0x00000045, 0x00000006,
++    0x00000001, 0x00000000, 0x00000000, 0x00000000, 0x00000001, 0x00000000, 0x00040020, 0x00000046,
++    0x00000000, 0x00000045, 0x0004003B, 0x00000046, 0x00000047, 0x00000000, 0x0002001A, 0x00000049,
++    0x00040020, 0x0000004A, 0x00000000, 0x00000049, 0x0004003B, 0x0000004A, 0x0000004B, 0x00000000,
++    0x0003001B, 0x0000004D, 0x00000045, 0x00040015, 0x0000004F, 0x00000020, 0x00000001, 0x0004002B,
++    0x0000004F, 0x00000050, 0x00000000, 0x00040017, 0x00000052, 0x0000004F, 0x00000002, 0x00040017,
++    0x00000055, 0x00000006, 0x00000004, 0x00040020, 0x00000056, 0x00000007, 0x00000055, 0x00040020,
++    0x00000061, 0x00000007, 0x00000052, 0x00040020, 0x00000063, 0x00000001, 0x00000055, 0x0004003B,
++    0x00000063, 0x00000064, 0x00000001, 0x0004001E, 0x00000068, 0x00000052, 0x0000000C, 0x00040020,
++    0x00000069, 0x00000009, 0x00000068, 0x0004003B, 0x00000069, 0x0000006A, 0x00000009, 0x00040020,
++    0x0000006B, 0x00000009, 0x00000052, 0x0004002B, 0x00000006, 0x00000072, 0x3F000000, 0x0004002B,
++    0x0000004F, 0x00000075, 0x00000001, 0x00040020, 0x00000076, 0x00000009, 0x0000000C, 0x0004002B,
++    0x00000006, 0x0000007E, 0x3D008081, 0x0004002B, 0x00000006, 0x00000080, 0x40000000, 0x00040017,
++    0x00000088, 0x00000006, 0x00000003, 0x00040015, 0x0000008A, 0x00000020, 0x00000000, 0x0004002B,
++    0x0000008A, 0x0000008B, 0x00000000, 0x0004002B, 0x0000008A, 0x0000008E, 0x00000001, 0x0004002B,
++    0x0000008A, 0x00000091, 0x00000002, 0x0004002B, 0x00000006, 0x0000009A, 0xBF000000, 0x0005002C,
++    0x0000000C, 0x0000009B, 0x0000009A, 0x00000072, 0x00020014, 0x000000C7, 0x0004002B, 0x0000008A,
++    0x000000F7, 0x00000003, 0x0004002B, 0x00000006, 0x00000106, 0x3E800000, 0x0004002B, 0x00000006,
++    0x0000014A, 0x400BA2E8, 0x0004002B, 0x00000006, 0x0000022E, 0xBDB8B8B9, 0x0004002B, 0x00000006,
++    0x0000022F, 0x3DB8B8B9, 0x00040020, 0x00000244, 0x00000003, 0x00000055, 0x0004003B, 0x00000244,
++    0x00000245, 0x00000003, 0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200F8,
++    0x00000005, 0x0004003B, 0x00000043, 0x00000044, 0x00000007, 0x0004003B, 0x00000056, 0x00000057,
++    0x00000007, 0x0004003B, 0x00000061, 0x00000062, 0x00000007, 0x0004003B, 0x00000056, 0x0000006F,
++    0x00000007, 0x0004003B, 0x00000007, 0x0000007D, 0x00000007, 0x0004003B, 0x00000007, 0x0000007F,
++    0x00000007, 0x0004003B, 0x00000056, 0x00000081, 0x00000007, 0x0004003B, 0x00000043, 0x00000094,
++    0x00000007, 0x0004003B, 0x00000043, 0x0000009D, 0x00000007, 0x0004003B, 0x00000043, 0x000000A0,
++    0x00000007, 0x0004003B, 0x00000043, 0x000000A5, 0x00000007, 0x0004003B, 0x00000056, 0x000000AA,
++    0x00000007, 0x0004003B, 0x00000007, 0x000000B0, 0x00000007, 0x0004003B, 0x00000056, 0x000000D1,
++    0x00000007, 0x0004003B, 0x00000056, 0x000000DB, 0x00000007, 0x0004003B, 0x00000007, 0x000000FA,
++    0x00000007, 0x0004003B, 0x00000007, 0x00000119, 0x00000007, 0x0004003B, 0x00000007, 0x00000149,
++    0x00000007, 0x0004003B, 0x00000043, 0x0000014D, 0x00000007, 0x0004003B, 0x00000007, 0x00000151,
++    0x00000007, 0x0004003B, 0x00000007, 0x00000154, 0x00000007, 0x0004003B, 0x00000007, 0x00000155,
++    0x00000007, 0x0004003B, 0x00000007, 0x00000158, 0x00000007, 0x0004003B, 0x00000007, 0x00000161,
++    0x00000007, 0x0004003B, 0x00000007, 0x00000162, 0x00000007, 0x0004003B, 0x00000007, 0x00000163,
++    0x00000007, 0x0004003B, 0x00000007, 0x00000166, 0x00000007, 0x0004003B, 0x00000007, 0x00000171,
++    0x00000007, 0x0004003B, 0x00000007, 0x00000172, 0x00000007, 0x0004003B, 0x00000007, 0x00000173,
++    0x00000007, 0x0004003B, 0x00000007, 0x00000176, 0x00000007, 0x0004003B, 0x00000007, 0x0000017E,
++    0x00000007, 0x0004003B, 0x00000007, 0x00000181, 0x00000007, 0x0004003B, 0x00000007, 0x00000182,
++    0x00000007, 0x0004003B, 0x00000007, 0x00000185, 0x00000007, 0x0004003B, 0x00000007, 0x00000190,
++    0x00000007, 0x0004003B, 0x00000007, 0x00000191, 0x00000007, 0x0004003B, 0x00000007, 0x00000192,
++    0x00000007, 0x0004003B, 0x00000007, 0x00000195, 0x00000007, 0x0004003B, 0x00000007, 0x0000019D,
++    0x00000007, 0x0004003B, 0x00000007, 0x000001A0, 0x00000007, 0x0004003B, 0x00000007, 0x000001A1,
++    0x00000007, 0x0004003B, 0x00000007, 0x000001A4, 0x00000007, 0x0004003B, 0x00000007, 0x000001A9,
++    0x00000007, 0x0004003B, 0x00000007, 0x000001AC, 0x00000007, 0x0004003B, 0x00000007, 0x000001AF,
++    0x00000007, 0x0004003B, 0x00000007, 0x000001B2, 0x00000007, 0x0004003B, 0x00000007, 0x000001BA,
++    0x00000007, 0x0004003B, 0x00000007, 0x000001BB, 0x00000007, 0x0004003B, 0x00000007, 0x000001BE,
++    0x00000007, 0x0004003B, 0x00000007, 0x000001C1, 0x00000007, 0x0004003B, 0x00000007, 0x000001CC,
++    0x00000007, 0x0004003B, 0x00000007, 0x000001CD, 0x00000007, 0x0004003B, 0x00000007, 0x000001CE,
++    0x00000007, 0x0004003B, 0x00000007, 0x000001D1, 0x00000007, 0x0004003B, 0x00000007, 0x000001DC,
++    0x00000007, 0x0004003B, 0x00000007, 0x000001DD, 0x00000007, 0x0004003B, 0x00000007, 0x000001DE,
++    0x00000007, 0x0004003B, 0x00000007, 0x000001E1, 0x00000007, 0x0004003B, 0x00000007, 0x000001E9,
++    0x00000007, 0x0004003B, 0x00000007, 0x000001EA, 0x00000007, 0x0004003B, 0x00000007, 0x000001ED,
++    0x00000007, 0x0004003B, 0x00000007, 0x000001F0, 0x00000007, 0x0004003B, 0x00000007, 0x000001F8,
++    0x00000007, 0x0004003B, 0x00000007, 0x000001F9, 0x00000007, 0x0004003B, 0x00000007, 0x000001FC,
++    0x00000007, 0x0004003B, 0x00000007, 0x000001FF, 0x00000007, 0x0004003B, 0x00000007, 0x00000204,
++    0x00000007, 0x0004003B, 0x00000007, 0x0000020A, 0x00000007, 0x0004003B, 0x00000007, 0x00000216,
++    0x00000007, 0x0004003B, 0x00000007, 0x00000228, 0x00000007, 0x0004003D, 0x00000045, 0x00000048,
++    0x00000047, 0x0004003D, 0x00000049, 0x0000004C, 0x0000004B, 0x00050056, 0x0000004D, 0x0000004E,
++    0x00000048, 0x0000004C, 0x00040064, 0x00000045, 0x00000051, 0x0000004E, 0x00050067, 0x00000052,
++    0x00000053, 0x00000051, 0x00000050, 0x0004006F, 0x0000000C, 0x00000054, 0x00000053, 0x0003003E,
++    0x00000044, 0x00000054, 0x0004003D, 0x0000000C, 0x00000058, 0x00000044, 0x00050050, 0x0000000C,
++    0x00000059, 0x00000035, 0x00000035, 0x00050088, 0x0000000C, 0x0000005A, 0x00000059, 0x00000058,
++    0x0004003D, 0x0000000C, 0x0000005B, 0x00000044, 0x00050051, 0x00000006, 0x0000005C, 0x0000005A,
++    0x00000000, 0x00050051, 0x00000006, 0x0000005D, 0x0000005A, 0x00000001, 0x00050051, 0x00000006,
++    0x0000005E, 0x0000005B, 0x00000000, 0x00050051, 0x00000006, 0x0000005F, 0x0000005B, 0x00000001,
++    0x00070050, 0x00000055, 0x00000060, 0x0000005C, 0x0000005D, 0x0000005E, 0x0000005F, 0x0003003E,
++    0x00000057, 0x00000060, 0x0004003D, 0x00000055, 0x00000065, 0x00000064, 0x0007004F, 0x0000000C,
++    0x00000066, 0x00000065, 0x00000065, 0x00000000, 0x00000001, 0x0004006E, 0x00000052, 0x00000067,
++    0x00000066, 0x00050041, 0x0000006B, 0x0000006C, 0x0000006A, 0x00000050, 0x0004003D, 0x00000052,
++    0x0000006D, 0x0000006C, 0x00050082, 0x00000052, 0x0000006E, 0x00000067, 0x0000006D, 0x0003003E,
++    0x00000062, 0x0000006E, 0x0004003D, 0x00000052, 0x00000070, 0x00000062, 0x0004006F, 0x0000000C,
++    0x00000071, 0x00000070, 0x00050050, 0x0000000C, 0x00000073, 0x00000072, 0x00000072, 0x00050081,
++    0x0000000C, 0x00000074, 0x00000071, 0x00000073, 0x00050041, 0x00000076, 0x00000077, 0x0000006A,
++    0x00000075, 0x0004003D, 0x0000000C, 0x00000078, 0x00000077, 0x00050085, 0x0000000C, 0x00000079,
++    0x00000074, 0x00000078, 0x00050051, 0x00000006, 0x0000007A, 0x00000079, 0x00000000, 0x00050051,
++    0x00000006, 0x0000007B, 0x00000079, 0x00000001, 0x00070050, 0x00000055, 0x0000007C, 0x0000007A,
++    0x0000007B, 0x00000034, 0x00000034, 0x0003003E, 0x0000006F, 0x0000007C, 0x0003003E, 0x0000007D,
++    0x0000007E, 0x0003003E, 0x0000007F, 0x00000080, 0x0004003D, 0x00000045, 0x00000082, 0x00000047,
++    0x0004003D, 0x00000049, 0x00000083, 0x0000004B, 0x00050056, 0x0000004D, 0x00000084, 0x00000082,
++    0x00000083, 0x0004003D, 0x00000055, 0x00000085, 0x0000006F, 0x0007004F, 0x0000000C, 0x00000086,
++    0x00000085, 0x00000085, 0x00000000, 0x00000001, 0x00070058, 0x00000055, 0x00000087, 0x00000084,
++    0x00000086, 0x00000002, 0x00000034, 0x0008004F, 0x00000088, 0x00000089, 0x00000087, 0x00000087,
++    0x00000000, 0x00000001, 0x00000002, 0x00050041, 0x00000007, 0x0000008C, 0x00000081, 0x0000008B,
++    0x00050051, 0x00000006, 0x0000008D, 0x00000089, 0x00000000, 0x0003003E, 0x0000008C, 0x0000008D,
++    0x00050041, 0x00000007, 0x0000008F, 0x00000081, 0x0000008E, 0x00050051, 0x00000006, 0x00000090,
++    0x00000089, 0x00000001, 0x0003003E, 0x0000008F, 0x00000090, 0x00050041, 0x00000007, 0x00000092,
++    0x00000081, 0x00000091, 0x00050051, 0x00000006, 0x00000093, 0x00000089, 0x00000002, 0x0003003E,
++    0x00000092, 0x00000093, 0x0004003D, 0x00000055, 0x00000095, 0x0000006F, 0x0007004F, 0x0000000C,
++    0x00000096, 0x00000095, 0x00000095, 0x00000000, 0x00000001, 0x0004003D, 0x00000055, 0x00000097,
++    0x00000057, 0x0007004F, 0x0000000C, 0x00000098, 0x00000097, 0x00000097, 0x00000002, 0x00000003,
++    0x00050085, 0x0000000C, 0x00000099, 0x00000096, 0x00000098, 0x00050081, 0x0000000C, 0x0000009C,
++    0x00000099, 0x0000009B, 0x0003003E, 0x00000094, 0x0000009C, 0x0004003D, 0x0000000C, 0x0000009E,
++    0x00000094, 0x0006000C, 0x0000000C, 0x0000009F, 0x00000001, 0x00000008, 0x0000009E, 0x0003003E,
++    0x0000009D, 0x0000009F, 0x0004003D, 0x0000000C, 0x000000A1, 0x0000009D, 0x0004003D, 0x00000055,
++    0x000000A2, 0x00000057, 0x0007004F, 0x0000000C, 0x000000A3, 0x000000A2, 0x000000A2, 0x00000000,
++    0x00000001, 0x00050085, 0x0000000C, 0x000000A4, 0x000000A1, 0x000000A3, 0x0003003E, 0x000000A0,
++    0x000000A4, 0x0004003D, 0x0000000C, 0x000000A6, 0x00000094, 0x0004003D, 0x0000000C, 0x000000A7,
++    0x0000009D, 0x0004007F, 0x0000000C, 0x000000A8, 0x000000A7, 0x00050081, 0x0000000C, 0x000000A9,
++    0x000000A6, 0x000000A8, 0x0003003E, 0x000000A5, 0x000000A9, 0x0004003D, 0x00000045, 0x000000AB,
++    0x00000047, 0x0004003D, 0x00000049, 0x000000AC, 0x0000004B, 0x00050056, 0x0000004D, 0x000000AD,
++    0x000000AB, 0x000000AC, 0x0004003D, 0x0000000C, 0x000000AE, 0x000000A0, 0x00060060, 0x00000055,
++    0x000000AF, 0x000000AD, 0x000000AE, 0x00000075, 0x0003003E, 0x000000AA, 0x000000AF, 0x00050041,
++    0x00000007, 0x000000B1, 0x000000AA, 0x00000091, 0x0004003D, 0x00000006, 0x000000B2, 0x000000B1,
++    0x00050041, 0x00000007, 0x000000B3, 0x000000AA, 0x0000008E, 0x0004003D, 0x00000006, 0x000000B4,
++    0x000000B3, 0x00050083, 0x00000006, 0x000000B5, 0x000000B2, 0x000000B4, 0x0006000C, 0x00000006,
++    0x000000B6, 0x00000001, 0x00000004, 0x000000B5, 0x00050041, 0x00000007, 0x000000B7, 0x00000081,
++    0x0000008E, 0x0004003D, 0x00000006, 0x000000B8, 0x000000B7, 0x00050041, 0x00000007, 0x000000B9,
++    0x000000AA, 0x0000008E, 0x0004003D, 0x00000006, 0x000000BA, 0x000000B9, 0x00050083, 0x00000006,
++    0x000000BB, 0x000000B8, 0x000000BA, 0x0006000C, 0x00000006, 0x000000BC, 0x00000001, 0x00000004,
++    0x000000BB, 0x00050081, 0x00000006, 0x000000BD, 0x000000B6, 0x000000BC, 0x00050041, 0x00000007,
++    0x000000BE, 0x00000081, 0x0000008E, 0x0004003D, 0x00000006, 0x000000BF, 0x000000BE, 0x00050041,
++    0x00000007, 0x000000C0, 0x000000AA, 0x00000091, 0x0004003D, 0x00000006, 0x000000C1, 0x000000C0,
++    0x00050083, 0x00000006, 0x000000C2, 0x000000BF, 0x000000C1, 0x0006000C, 0x00000006, 0x000000C3,
++    0x00000001, 0x00000004, 0x000000C2, 0x00050081, 0x00000006, 0x000000C4, 0x000000BD, 0x000000C3,
++    0x0003003E, 0x000000B0, 0x000000C4, 0x0004003D, 0x00000006, 0x000000C5, 0x000000B0, 0x0004003D,
++    0x00000006, 0x000000C6, 0x0000007D, 0x000500BA, 0x000000C7, 0x000000C8, 0x000000C5, 0x000000C6,
++    0x000300F7, 0x000000CA, 0x00000000, 0x000400FA, 0x000000C8, 0x000000C9, 0x000000CA, 0x000200F8,
++    0x000000C9, 0x00050041, 0x00000007, 0x000000CB, 0x00000057, 0x0000008B, 0x0004003D, 0x00000006,
++    0x000000CC, 0x000000CB, 0x00050041, 0x00000007, 0x000000CD, 0x000000A0, 0x0000008B, 0x0004003D,
++    0x00000006, 0x000000CE, 0x000000CD, 0x00050081, 0x00000006, 0x000000CF, 0x000000CE, 0x000000CC,
++    0x00050041, 0x00000007, 0x000000D0, 0x000000A0, 0x0000008B, 0x0003003E, 0x000000D0, 0x000000CF,
++    0x0004003D, 0x00000045, 0x000000D2, 0x00000047, 0x0004003D, 0x00000049, 0x000000D3, 0x0000004B,
++    0x00050056, 0x0000004D, 0x000000D4, 0x000000D2, 0x000000D3, 0x0004003D, 0x0000000C, 0x000000D5,
++    0x000000A0, 0x00050041, 0x00000007, 0x000000D6, 0x00000057, 0x0000008B, 0x0004003D, 0x00000006,
++    0x000000D7, 0x000000D6, 0x00050050, 0x0000000C, 0x000000D8, 0x000000D7, 0x00000034, 0x00050081,
++    0x0000000C, 0x000000D9, 0x000000D5, 0x000000D8, 0x00060060, 0x00000055, 0x000000DA, 0x000000D4,
++    0x000000D9, 0x00000075, 0x0003003E, 0x000000D1, 0x000000DA, 0x0004003D, 0x00000045, 0x000000DC,
++    0x00000047, 0x0004003D, 0x00000049, 0x000000DD, 0x0000004B, 0x00050056, 0x0000004D, 0x000000DE,
++    0x000000DC, 0x000000DD, 0x0004003D, 0x0000000C, 0x000000DF, 0x000000A0, 0x00050041, 0x00000007,
++    0x000000E0, 0x00000057, 0x0000008E, 0x0004003D, 0x00000006, 0x000000E1, 0x000000E0, 0x0004007F,
++    0x00000006, 0x000000E2, 0x000000E1, 0x00050050, 0x0000000C, 0x000000E3, 0x00000034, 0x000000E2,
++    0x00050081, 0x0000000C, 0x000000E4, 0x000000DF, 0x000000E3, 0x00060060, 0x00000055, 0x000000E5,
++    0x000000DE, 0x000000E4, 0x00000075, 0x0007004F, 0x0000000C, 0x000000E6, 0x000000E5, 0x000000E5,
++    0x00000003, 0x00000002, 0x00050041, 0x00000007, 0x000000E7, 0x000000DB, 0x0000008B, 0x00050051,
++    0x00000006, 0x000000E8, 0x000000E6, 0x00000000, 0x0003003E, 0x000000E7, 0x000000E8, 0x00050041,
++    0x00000007, 0x000000E9, 0x000000DB, 0x0000008E, 0x00050051, 0x00000006, 0x000000EA, 0x000000E6,
++    0x00000001, 0x0003003E, 0x000000E9, 0x000000EA, 0x0004003D, 0x00000045, 0x000000EB, 0x00000047,
++    0x0004003D, 0x00000049, 0x000000EC, 0x0000004B, 0x00050056, 0x0000004D, 0x000000ED, 0x000000EB,
++    0x000000EC, 0x0004003D, 0x0000000C, 0x000000EE, 0x000000A0, 0x00050041, 0x00000007, 0x000000EF,
++    0x00000057, 0x0000008E, 0x0004003D, 0x00000006, 0x000000F0, 0x000000EF, 0x00050050, 0x0000000C,
++    0x000000F1, 0x00000034, 0x000000F0, 0x00050081, 0x0000000C, 0x000000F2, 0x000000EE, 0x000000F1,
++    0x00060060, 0x00000055, 0x000000F3, 0x000000ED, 0x000000F2, 0x00000075, 0x0007004F, 0x0000000C,
++    0x000000F4, 0x000000F3, 0x000000F3, 0x00000001, 0x00000000, 0x00050041, 0x00000007, 0x000000F5,
++    0x000000DB, 0x00000091, 0x00050051, 0x00000006, 0x000000F6, 0x000000F4, 0x00000000, 0x0003003E,
++    0x000000F5, 0x000000F6, 0x00050041, 0x00000007, 0x000000F8, 0x000000DB, 0x000000F7, 0x00050051,
++    0x00000006, 0x000000F9, 0x000000F4, 0x00000001, 0x0003003E, 0x000000F8, 0x000000F9, 0x00050041,
++    0x00000007, 0x000000FB, 0x000000AA, 0x0000008E, 0x0004003D, 0x00000006, 0x000000FC, 0x000000FB,
++    0x00050041, 0x00000007, 0x000000FD, 0x000000AA, 0x00000091, 0x0004003D, 0x00000006, 0x000000FE,
++    0x000000FD, 0x00050081, 0x00000006, 0x000000FF, 0x000000FC, 0x000000FE, 0x00050041, 0x00000007,
++    0x00000100, 0x000000D1, 0x0000008B, 0x0004003D, 0x00000006, 0x00000101, 0x00000100, 0x00050081,
++    0x00000006, 0x00000102, 0x000000FF, 0x00000101, 0x00050041, 0x00000007, 0x00000103, 0x000000D1,
++    0x000000F7, 0x0004003D, 0x00000006, 0x00000104, 0x00000103, 0x00050081, 0x00000006, 0x00000105,
++    0x00000102, 0x00000104, 0x00050085, 0x00000006, 0x00000107, 0x00000105, 0x00000106, 0x0003003E,
++    0x000000FA, 0x00000107, 0x0004003D, 0x00000055, 0x00000108, 0x000000AA, 0x0004003D, 0x00000006,
++    0x00000109, 0x000000FA, 0x00070050, 0x00000055, 0x0000010A, 0x00000109, 0x00000109, 0x00000109,
++    0x00000109, 0x00050083, 0x00000055, 0x0000010B, 0x00000108, 0x0000010A, 0x0003003E, 0x000000AA,
++    0x0000010B, 0x0004003D, 0x00000055, 0x0000010C, 0x000000D1, 0x0004003D, 0x00000006, 0x0000010D,
++    0x000000FA, 0x00070050, 0x00000055, 0x0000010E, 0x0000010D, 0x0000010D, 0x0000010D, 0x0000010D,
++    0x00050083, 0x00000055, 0x0000010F, 0x0000010C, 0x0000010E, 0x0003003E, 0x000000D1, 0x0000010F,
++    0x0004003D, 0x00000055, 0x00000110, 0x000000DB, 0x0004003D, 0x00000006, 0x00000111, 0x000000FA,
++    0x00070050, 0x00000055, 0x00000112, 0x00000111, 0x00000111, 0x00000111, 0x00000111, 0x00050083,
++    0x00000055, 0x00000113, 0x00000110, 0x00000112, 0x0003003E, 0x000000DB, 0x00000113, 0x00050041,
++    0x00000007, 0x00000114, 0x00000081, 0x0000008E, 0x0004003D, 0x00000006, 0x00000115, 0x00000114,
++    0x0004003D, 0x00000006, 0x00000116, 0x000000FA, 0x00050083, 0x00000006, 0x00000117, 0x00000115,
++    0x00000116, 0x00050041, 0x00000007, 0x00000118, 0x00000081, 0x000000F7, 0x0003003E, 0x00000118,
++    0x00000117, 0x00050041, 0x00000007, 0x0000011A, 0x000000AA, 0x0000008B, 0x0004003D, 0x00000006,
++    0x0000011B, 0x0000011A, 0x0006000C, 0x00000006, 0x0000011C, 0x00000001, 0x00000004, 0x0000011B,
++    0x00050041, 0x00000007, 0x0000011D, 0x000000AA, 0x0000008E, 0x0004003D, 0x00000006, 0x0000011E,
++    0x0000011D, 0x0006000C, 0x00000006, 0x0000011F, 0x00000001, 0x00000004, 0x0000011E, 0x00050081,
++    0x00000006, 0x00000120, 0x0000011C, 0x0000011F, 0x00050041, 0x00000007, 0x00000121, 0x000000AA,
++    0x00000091, 0x0004003D, 0x00000006, 0x00000122, 0x00000121, 0x0006000C, 0x00000006, 0x00000123,
++    0x00000001, 0x00000004, 0x00000122, 0x00050081, 0x00000006, 0x00000124, 0x00000120, 0x00000123,
++    0x00050041, 0x00000007, 0x00000125, 0x000000AA, 0x000000F7, 0x0004003D, 0x00000006, 0x00000126,
++    0x00000125, 0x0006000C, 0x00000006, 0x00000127, 0x00000001, 0x00000004, 0x00000126, 0x00050081,
++    0x00000006, 0x00000128, 0x00000124, 0x00000127, 0x00050041, 0x00000007, 0x00000129, 0x000000D1,
++    0x0000008B, 0x0004003D, 0x00000006, 0x0000012A, 0x00000129, 0x0006000C, 0x00000006, 0x0000012B,
++    0x00000001, 0x00000004, 0x0000012A, 0x00050041, 0x00000007, 0x0000012C, 0x000000D1, 0x0000008E,
++    0x0004003D, 0x00000006, 0x0000012D, 0x0000012C, 0x0006000C, 0x00000006, 0x0000012E, 0x00000001,
++    0x00000004, 0x0000012D, 0x00050081, 0x00000006, 0x0000012F, 0x0000012B, 0x0000012E, 0x00050041,
++    0x00000007, 0x00000130, 0x000000D1, 0x00000091, 0x0004003D, 0x00000006, 0x00000131, 0x00000130,
++    0x0006000C, 0x00000006, 0x00000132, 0x00000001, 0x00000004, 0x00000131, 0x00050081, 0x00000006,
++    0x00000133, 0x0000012F, 0x00000132, 0x00050041, 0x00000007, 0x00000134, 0x000000D1, 0x000000F7,
++    0x0004003D, 0x00000006, 0x00000135, 0x00000134, 0x0006000C, 0x00000006, 0x00000136, 0x00000001,
++    0x00000004, 0x00000135, 0x00050081, 0x00000006, 0x00000137, 0x00000133, 0x00000136, 0x00050081,
++    0x00000006, 0x00000138, 0x00000128, 0x00000137, 0x00050041, 0x00000007, 0x00000139, 0x000000DB,
++    0x0000008B, 0x0004003D, 0x00000006, 0x0000013A, 0x00000139, 0x0006000C, 0x00000006, 0x0000013B,
++    0x00000001, 0x00000004, 0x0000013A, 0x00050041, 0x00000007, 0x0000013C, 0x000000DB, 0x0000008E,
++    0x0004003D, 0x00000006, 0x0000013D, 0x0000013C, 0x0006000C, 0x00000006, 0x0000013E, 0x00000001,
++    0x00000004, 0x0000013D, 0x00050081, 0x00000006, 0x0000013F, 0x0000013B, 0x0000013E, 0x00050041,
++    0x00000007, 0x00000140, 0x000000DB, 0x00000091, 0x0004003D, 0x00000006, 0x00000141, 0x00000140,
++    0x0006000C, 0x00000006, 0x00000142, 0x00000001, 0x00000004, 0x00000141, 0x00050081, 0x00000006,
++    0x00000143, 0x0000013F, 0x00000142, 0x00050041, 0x00000007, 0x00000144, 0x000000DB, 0x000000F7,
++    0x0004003D, 0x00000006, 0x00000145, 0x00000144, 0x0006000C, 0x00000006, 0x00000146, 0x00000001,
++    0x00000004, 0x00000145, 0x00050081, 0x00000006, 0x00000147, 0x00000143, 0x00000146, 0x00050081,
++    0x00000006, 0x00000148, 0x00000138, 0x00000147, 0x0003003E, 0x00000119, 0x00000148, 0x0004003D,
++    0x00000006, 0x0000014B, 0x00000119, 0x00050088, 0x00000006, 0x0000014C, 0x0000014A, 0x0000014B,
++    0x0003003E, 0x00000149, 0x0000014C, 0x00050041, 0x00000007, 0x0000014E, 0x000000A5, 0x0000008E,
++    0x0004003D, 0x00000006, 0x0000014F, 0x0000014E, 0x00050081, 0x00000006, 0x00000150, 0x0000014F,
++    0x00000035, 0x00050041, 0x00000007, 0x00000152, 0x000000A5, 0x0000008B, 0x0004003D, 0x00000006,
++    0x00000153, 0x00000152, 0x0003003E, 0x00000151, 0x00000153, 0x0003003E, 0x00000154, 0x00000150,
++    0x00050041, 0x00000007, 0x00000156, 0x000000DB, 0x0000008B, 0x0004003D, 0x00000006, 0x00000157,
++    0x00000156, 0x0003003E, 0x00000155, 0x00000157, 0x0004003D, 0x00000006, 0x00000159, 0x00000149,
++    0x0003003E, 0x00000158, 0x00000159, 0x00080039, 0x0000000C, 0x0000015A, 0x00000012, 0x00000151,
++    0x00000154, 0x00000155, 0x00000158, 0x0003003E, 0x0000014D, 0x0000015A, 0x00050041, 0x00000007,
++    0x0000015B, 0x000000A5, 0x0000008B, 0x0004003D, 0x00000006, 0x0000015C, 0x0000015B, 0x00050083,
++    0x00000006, 0x0000015D, 0x0000015C, 0x00000035, 0x00050041, 0x00000007, 0x0000015E, 0x000000A5,
++    0x0000008E, 0x0004003D, 0x00000006, 0x0000015F, 0x0000015E, 0x00050081, 0x00000006, 0x00000160,
++    0x0000015F, 0x00000035, 0x0003003E, 0x00000161, 0x0000015D, 0x0003003E, 0x00000162, 0x00000160,
++    0x00050041, 0x00000007, 0x00000164, 0x000000DB, 0x0000008E, 0x0004003D, 0x00000006, 0x00000165,
++    0x00000164, 0x0003003E, 0x00000163, 0x00000165, 0x0004003D, 0x00000006, 0x00000167, 0x00000149,
++    0x0003003E, 0x00000166, 0x00000167, 0x00080039, 0x0000000C, 0x00000168, 0x00000012, 0x00000161,
++    0x00000162, 0x00000163, 0x00000166, 0x0004003D, 0x0000000C, 0x00000169, 0x0000014D, 0x00050081,
++    0x0000000C, 0x0000016A, 0x00000169, 0x00000168, 0x0003003E, 0x0000014D, 0x0000016A, 0x00050041,
++    0x00000007, 0x0000016B, 0x000000A5, 0x0000008B, 0x0004003D, 0x00000006, 0x0000016C, 0x0000016B,
++    0x00050083, 0x00000006, 0x0000016D, 0x0000016C, 0x00000035, 0x00050041, 0x00000007, 0x0000016E,
++    0x000000A5, 0x0000008E, 0x0004003D, 0x00000006, 0x0000016F, 0x0000016E, 0x00050083, 0x00000006,
++    0x00000170, 0x0000016F, 0x00000080, 0x0003003E, 0x00000171, 0x0000016D, 0x0003003E, 0x00000172,
++    0x00000170, 0x00050041, 0x00000007, 0x00000174, 0x000000DB, 0x00000091, 0x0004003D, 0x00000006,
++    0x00000175, 0x00000174, 0x0003003E, 0x00000173, 0x00000175, 0x0004003D, 0x00000006, 0x00000177,
++    0x00000149, 0x0003003E, 0x00000176, 0x00000177, 0x00080039, 0x0000000C, 0x00000178, 0x00000012,
++    0x00000171, 0x00000172, 0x00000173, 0x00000176, 0x0004003D, 0x0000000C, 0x00000179, 0x0000014D,
++    0x00050081, 0x0000000C, 0x0000017A, 0x00000179, 0x00000178, 0x0003003E, 0x0000014D, 0x0000017A,
++    0x00050041, 0x00000007, 0x0000017B, 0x000000A5, 0x0000008E, 0x0004003D, 0x00000006, 0x0000017C,
++    0x0000017B, 0x00050083, 0x00000006, 0x0000017D, 0x0000017C, 0x00000080, 0x00050041, 0x00000007,
++    0x0000017F, 0x000000A5, 0x0000008B, 0x0004003D, 0x00000006, 0x00000180, 0x0000017F, 0x0003003E,
++    0x0000017E, 0x00000180, 0x0003003E, 0x00000181, 0x0000017D, 0x00050041, 0x00000007, 0x00000183,
++    0x000000DB, 0x000000F7, 0x0004003D, 0x00000006, 0x00000184, 0x00000183, 0x0003003E, 0x00000182,
++    0x00000184, 0x0004003D, 0x00000006, 0x00000186, 0x00000149, 0x0003003E, 0x00000185, 0x00000186,
++    0x00080039, 0x0000000C, 0x00000187, 0x00000012, 0x0000017E, 0x00000181, 0x00000182, 0x00000185,
++    0x0004003D, 0x0000000C, 0x00000188, 0x0000014D, 0x00050081, 0x0000000C, 0x00000189, 0x00000188,
++    0x00000187, 0x0003003E, 0x0000014D, 0x00000189, 0x00050041, 0x00000007, 0x0000018A, 0x000000A5,
++    0x0000008B, 0x0004003D, 0x00000006, 0x0000018B, 0x0000018A, 0x00050081, 0x00000006, 0x0000018C,
++    0x0000018B, 0x00000035, 0x00050041, 0x00000007, 0x0000018D, 0x000000A5, 0x0000008E, 0x0004003D,
++    0x00000006, 0x0000018E, 0x0000018D, 0x00050083, 0x00000006, 0x0000018F, 0x0000018E, 0x00000035,
++    0x0003003E, 0x00000190, 0x0000018C, 0x0003003E, 0x00000191, 0x0000018F, 0x00050041, 0x00000007,
++    0x00000193, 0x000000AA, 0x0000008B, 0x0004003D, 0x00000006, 0x00000194, 0x00000193, 0x0003003E,
++    0x00000192, 0x00000194, 0x0004003D, 0x00000006, 0x00000196, 0x00000149, 0x0003003E, 0x00000195,
++    0x00000196, 0x00080039, 0x0000000C, 0x00000197, 0x00000012, 0x00000190, 0x00000191, 0x00000192,
++    0x00000195, 0x0004003D, 0x0000000C, 0x00000198, 0x0000014D, 0x00050081, 0x0000000C, 0x00000199,
++    0x00000198, 0x00000197, 0x0003003E, 0x0000014D, 0x00000199, 0x00050041, 0x00000007, 0x0000019A,
++    0x000000A5, 0x0000008E, 0x0004003D, 0x00000006, 0x0000019B, 0x0000019A, 0x00050083, 0x00000006,
++    0x0000019C, 0x0000019B, 0x00000035, 0x00050041, 0x00000007, 0x0000019E, 0x000000A5, 0x0000008B,
++    0x0004003D, 0x00000006, 0x0000019F, 0x0000019E, 0x0003003E, 0x0000019D, 0x0000019F, 0x0003003E,
++    0x000001A0, 0x0000019C, 0x00050041, 0x00000007, 0x000001A2, 0x000000AA, 0x0000008E, 0x0004003D,
++    0x00000006, 0x000001A3, 0x000001A2, 0x0003003E, 0x000001A1, 0x000001A3, 0x0004003D, 0x00000006,
++    0x000001A5, 0x00000149, 0x0003003E, 0x000001A4, 0x000001A5, 0x00080039, 0x0000000C, 0x000001A6,
++    0x00000012, 0x0000019D, 0x000001A0, 0x000001A1, 0x000001A4, 0x0004003D, 0x0000000C, 0x000001A7,
++    0x0000014D, 0x00050081, 0x0000000C, 0x000001A8, 0x000001A7, 0x000001A6, 0x0003003E, 0x0000014D,
++    0x000001A8, 0x00050041, 0x00000007, 0x000001AA, 0x000000A5, 0x0000008B, 0x0004003D, 0x00000006,
++    0x000001AB, 0x000001AA, 0x0003003E, 0x000001A9, 0x000001AB, 0x00050041, 0x00000007, 0x000001AD,
++    0x000000A5, 0x0000008E, 0x0004003D, 0x00000006, 0x000001AE, 0x000001AD, 0x0003003E, 0x000001AC,
++    0x000001AE, 0x00050041, 0x00000007, 0x000001B0, 0x000000AA, 0x00000091, 0x0004003D, 0x00000006,
++    0x000001B1, 0x000001B0, 0x0003003E, 0x000001AF, 0x000001B1, 0x0004003D, 0x00000006, 0x000001B3,
++    0x00000149, 0x0003003E, 0x000001B2, 0x000001B3, 0x00080039, 0x0000000C, 0x000001B4, 0x00000012,
++    0x000001A9, 0x000001AC, 0x000001AF, 0x000001B2, 0x0004003D, 0x0000000C, 0x000001B5, 0x0000014D,
++    0x00050081, 0x0000000C, 0x000001B6, 0x000001B5, 0x000001B4, 0x0003003E, 0x0000014D, 0x000001B6,
++    0x00050041, 0x00000007, 0x000001B7, 0x000000A5, 0x0000008B, 0x0004003D, 0x00000006, 0x000001B8,
++    0x000001B7, 0x00050081, 0x00000006, 0x000001B9, 0x000001B8, 0x00000035, 0x0003003E, 0x000001BA,
++    0x000001B9, 0x00050041, 0x00000007, 0x000001BC, 0x000000A5, 0x0000008E, 0x0004003D, 0x00000006,
++    0x000001BD, 0x000001BC, 0x0003003E, 0x000001BB, 0x000001BD, 0x00050041, 0x00000007, 0x000001BF,
++    0x000000AA, 0x000000F7, 0x0004003D, 0x00000006, 0x000001C0, 0x000001BF, 0x0003003E, 0x000001BE,
++    0x000001C0, 0x0004003D, 0x00000006, 0x000001C2, 0x00000149, 0x0003003E, 0x000001C1, 0x000001C2,
++    0x00080039, 0x0000000C, 0x000001C3, 0x00000012, 0x000001BA, 0x000001BB, 0x000001BE, 0x000001C1,
++    0x0004003D, 0x0000000C, 0x000001C4, 0x0000014D, 0x00050081, 0x0000000C, 0x000001C5, 0x000001C4,
++    0x000001C3, 0x0003003E, 0x0000014D, 0x000001C5, 0x00050041, 0x00000007, 0x000001C6, 0x000000A5,
++    0x0000008B, 0x0004003D, 0x00000006, 0x000001C7, 0x000001C6, 0x00050083, 0x00000006, 0x000001C8,
++    0x000001C7, 0x00000035, 0x00050041, 0x00000007, 0x000001C9, 0x000000A5, 0x0000008E, 0x0004003D,
++    0x00000006, 0x000001CA, 0x000001C9, 0x00050083, 0x00000006, 0x000001CB, 0x000001CA, 0x00000035,
++    0x0003003E, 0x000001CC, 0x000001C8, 0x0003003E, 0x000001CD, 0x000001CB, 0x00050041, 0x00000007,
++    0x000001CF, 0x000000D1, 0x0000008B, 0x0004003D, 0x00000006, 0x000001D0, 0x000001CF, 0x0003003E,
++    0x000001CE, 0x000001D0, 0x0004003D, 0x00000006, 0x000001D2, 0x00000149, 0x0003003E, 0x000001D1,
++    0x000001D2, 0x00080039, 0x0000000C, 0x000001D3, 0x00000012, 0x000001CC, 0x000001CD, 0x000001CE,
++    0x000001D1, 0x0004003D, 0x0000000C, 0x000001D4, 0x0000014D, 0x00050081, 0x0000000C, 0x000001D5,
++    0x000001D4, 0x000001D3, 0x0003003E, 0x0000014D, 0x000001D5, 0x00050041, 0x00000007, 0x000001D6,
++    0x000000A5, 0x0000008B, 0x0004003D, 0x00000006, 0x000001D7, 0x000001D6, 0x00050083, 0x00000006,
++    0x000001D8, 0x000001D7, 0x00000080, 0x00050041, 0x00000007, 0x000001D9, 0x000000A5, 0x0000008E,
++    0x0004003D, 0x00000006, 0x000001DA, 0x000001D9, 0x00050083, 0x00000006, 0x000001DB, 0x000001DA,
++    0x00000035, 0x0003003E, 0x000001DC, 0x000001D8, 0x0003003E, 0x000001DD, 0x000001DB, 0x00050041,
++    0x00000007, 0x000001DF, 0x000000D1, 0x0000008E, 0x0004003D, 0x00000006, 0x000001E0, 0x000001DF,
++    0x0003003E, 0x000001DE, 0x000001E0, 0x0004003D, 0x00000006, 0x000001E2, 0x00000149, 0x0003003E,
++    0x000001E1, 0x000001E2, 0x00080039, 0x0000000C, 0x000001E3, 0x00000012, 0x000001DC, 0x000001DD,
++    0x000001DE, 0x000001E1, 0x0004003D, 0x0000000C, 0x000001E4, 0x0000014D, 0x00050081, 0x0000000C,
++    0x000001E5, 0x000001E4, 0x000001E3, 0x0003003E, 0x0000014D, 0x000001E5, 0x00050041, 0x00000007,
++    0x000001E6, 0x000000A5, 0x0000008B, 0x0004003D, 0x00000006, 0x000001E7, 0x000001E6, 0x00050083,
++    0x00000006, 0x000001E8, 0x000001E7, 0x00000080, 0x0003003E, 0x000001E9, 0x000001E8, 0x00050041,
++    0x00000007, 0x000001EB, 0x000000A5, 0x0000008E, 0x0004003D, 0x00000006, 0x000001EC, 0x000001EB,
++    0x0003003E, 0x000001EA, 0x000001EC, 0x00050041, 0x00000007, 0x000001EE, 0x000000D1, 0x00000091,
++    0x0004003D, 0x00000006, 0x000001EF, 0x000001EE, 0x0003003E, 0x000001ED, 0x000001EF, 0x0004003D,
++    0x00000006, 0x000001F1, 0x00000149, 0x0003003E, 0x000001F0, 0x000001F1, 0x00080039, 0x0000000C,
++    0x000001F2, 0x00000012, 0x000001E9, 0x000001EA, 0x000001ED, 0x000001F0, 0x0004003D, 0x0000000C,
++    0x000001F3, 0x0000014D, 0x00050081, 0x0000000C, 0x000001F4, 0x000001F3, 0x000001F2, 0x0003003E,
++    0x0000014D, 0x000001F4, 0x00050041, 0x00000007, 0x000001F5, 0x000000A5, 0x0000008B, 0x0004003D,
++    0x00000006, 0x000001F6, 0x000001F5, 0x00050083, 0x00000006, 0x000001F7, 0x000001F6, 0x00000035,
++    0x0003003E, 0x000001F8, 0x000001F7, 0x00050041, 0x00000007, 0x000001FA, 0x000000A5, 0x0000008E,
++    0x0004003D, 0x00000006, 0x000001FB, 0x000001FA, 0x0003003E, 0x000001F9, 0x000001FB, 0x00050041,
++    0x00000007, 0x000001FD, 0x000000D1, 0x000000F7, 0x0004003D, 0x00000006, 0x000001FE, 0x000001FD,
++    0x0003003E, 0x000001FC, 0x000001FE, 0x0004003D, 0x00000006, 0x00000200, 0x00000149, 0x0003003E,
++    0x000001FF, 0x00000200, 0x00080039, 0x0000000C, 0x00000201, 0x00000012, 0x000001F8, 0x000001F9,
++    0x000001FC, 0x000001FF, 0x0004003D, 0x0000000C, 0x00000202, 0x0000014D, 0x00050081, 0x0000000C,
++    0x00000203, 0x00000202, 0x00000201, 0x0003003E, 0x0000014D, 0x00000203, 0x00050041, 0x00000007,
++    0x00000205, 0x0000014D, 0x0000008E, 0x0004003D, 0x00000006, 0x00000206, 0x00000205, 0x00050041,
++    0x00000007, 0x00000207, 0x0000014D, 0x0000008B, 0x0004003D, 0x00000006, 0x00000208, 0x00000207,
++    0x00050088, 0x00000006, 0x00000209, 0x00000206, 0x00000208, 0x0003003E, 0x00000204, 0x00000209,
++    0x00050041, 0x00000007, 0x0000020B, 0x000000AA, 0x0000008E, 0x0004003D, 0x00000006, 0x0000020C,
++    0x0000020B, 0x00050041, 0x00000007, 0x0000020D, 0x000000AA, 0x00000091, 0x0004003D, 0x00000006,
++    0x0000020E, 0x0000020D, 0x0007000C, 0x00000006, 0x0000020F, 0x00000001, 0x00000028, 0x0000020C,
++    0x0000020E, 0x00050041, 0x00000007, 0x00000210, 0x000000D1, 0x0000008B, 0x0004003D, 0x00000006,
++    0x00000211, 0x00000210, 0x00050041, 0x00000007, 0x00000212, 0x000000D1, 0x000000F7, 0x0004003D,
++    0x00000006, 0x00000213, 0x00000212, 0x0007000C, 0x00000006, 0x00000214, 0x00000001, 0x00000028,
++    0x00000211, 0x00000213, 0x0007000C, 0x00000006, 0x00000215, 0x00000001, 0x00000028, 0x0000020F,
++    0x00000214, 0x0003003E, 0x0000020A, 0x00000215, 0x00050041, 0x00000007, 0x00000217, 0x000000AA,
++    0x0000008E, 0x0004003D, 0x00000006, 0x00000218, 0x00000217, 0x00050041, 0x00000007, 0x00000219,
++    0x000000AA, 0x00000091, 0x0004003D, 0x00000006, 0x0000021A, 0x00000219, 0x0007000C, 0x00000006,
++    0x0000021B, 0x00000001, 0x00000025, 0x00000218, 0x0000021A, 0x00050041, 0x00000007, 0x0000021C,
++    0x000000D1, 0x0000008B, 0x0004003D, 0x00000006, 0x0000021D, 0x0000021C, 0x00050041, 0x00000007,
++    0x0000021E, 0x000000D1, 0x000000F7, 0x0004003D, 0x00000006, 0x0000021F, 0x0000021E, 0x0007000C,
++    0x00000006, 0x00000220, 0x00000001, 0x00000025, 0x0000021D, 0x0000021F, 0x0007000C, 0x00000006,
++    0x00000221, 0x00000001, 0x00000025, 0x0000021B, 0x00000220, 0x0003003E, 0x00000216, 0x00000221,
++    0x0004003D, 0x00000006, 0x00000222, 0x0000007F, 0x0004003D, 0x00000006, 0x00000223, 0x00000204,
++    0x00050085, 0x00000006, 0x00000224, 0x00000222, 0x00000223, 0x0004003D, 0x00000006, 0x00000225,
++    0x00000216, 0x0004003D, 0x00000006, 0x00000226, 0x0000020A, 0x0008000C, 0x00000006, 0x00000227,
++    0x00000001, 0x0000002B, 0x00000224, 0x00000225, 0x00000226, 0x0003003E, 0x00000204, 0x00000227,
++    0x0004003D, 0x00000006, 0x00000229, 0x00000204, 0x00050041, 0x00000007, 0x0000022A, 0x00000081,
++    0x000000F7, 0x0004003D, 0x00000006, 0x0000022B, 0x0000022A, 0x00050083, 0x00000006, 0x0000022C,
++    0x00000229, 0x0000022B, 0x0003003E, 0x00000228, 0x0000022C, 0x0004003D, 0x00000006, 0x0000022D,
++    0x00000228, 0x0008000C, 0x00000006, 0x00000230, 0x00000001, 0x0000002B, 0x0000022D, 0x0000022E,
++    0x0000022F, 0x0003003E, 0x00000228, 0x00000230, 0x00050041, 0x00000007, 0x00000231, 0x00000081,
++    0x0000008B, 0x0004003D, 0x00000006, 0x00000232, 0x00000231, 0x0004003D, 0x00000006, 0x00000233,
++    0x00000228, 0x00050081, 0x00000006, 0x00000234, 0x00000232, 0x00000233, 0x0008000C, 0x00000006,
++    0x00000235, 0x00000001, 0x0000002B, 0x00000234, 0x00000034, 0x00000035, 0x00050041, 0x00000007,
++    0x00000236, 0x00000081, 0x0000008B, 0x0003003E, 0x00000236, 0x00000235, 0x00050041, 0x00000007,
++    0x00000237, 0x00000081, 0x0000008E, 0x0004003D, 0x00000006, 0x00000238, 0x00000237, 0x0004003D,
++    0x00000006, 0x00000239, 0x00000228, 0x00050081, 0x00000006, 0x0000023A, 0x00000238, 0x00000239,
++    0x0008000C, 0x00000006, 0x0000023B, 0x00000001, 0x0000002B, 0x0000023A, 0x00000034, 0x00000035,
++    0x00050041, 0x00000007, 0x0000023C, 0x00000081, 0x0000008E, 0x0003003E, 0x0000023C, 0x0000023B,
++    0x00050041, 0x00000007, 0x0000023D, 0x00000081, 0x00000091, 0x0004003D, 0x00000006, 0x0000023E,
++    0x0000023D, 0x0004003D, 0x00000006, 0x0000023F, 0x00000228, 0x00050081, 0x00000006, 0x00000240,
++    0x0000023E, 0x0000023F, 0x0008000C, 0x00000006, 0x00000241, 0x00000001, 0x0000002B, 0x00000240,
++    0x00000034, 0x00000035, 0x00050041, 0x00000007, 0x00000242, 0x00000081, 0x00000091, 0x0003003E,
++    0x00000242, 0x00000241, 0x000200F9, 0x000000CA, 0x000200F8, 0x000000CA, 0x00050041, 0x00000007,
++    0x00000243, 0x00000081, 0x000000F7, 0x0003003E, 0x00000243, 0x00000035, 0x0004003D, 0x00000055,
++    0x00000246, 0x00000081, 0x0003003E, 0x00000245, 0x00000246, 0x000100FD, 0x00010038, 0x00050036,
++    0x00000006, 0x0000000A, 0x00000000, 0x00000008, 0x00030037, 0x00000007, 0x00000009, 0x000200F8,
++    0x0000000B, 0x0004003B, 0x00000007, 0x00000014, 0x00000007, 0x0004003B, 0x00000007, 0x00000018,
++    0x00000007, 0x0004003D, 0x00000006, 0x00000015, 0x00000009, 0x00050083, 0x00000006, 0x00000017,
++    0x00000015, 0x00000016, 0x0003003E, 0x00000014, 0x00000017, 0x0004003D, 0x00000006, 0x00000019,
++    0x00000009, 0x0004003D, 0x00000006, 0x0000001A, 0x00000014, 0x00050085, 0x00000006, 0x0000001B,
++    0x00000019, 0x0000001A, 0x0004003D, 0x00000006, 0x0000001C, 0x00000014, 0x00050083, 0x00000006,
++    0x0000001D, 0x0000001B, 0x0000001C, 0x0003003E, 0x00000018, 0x0000001D, 0x0004003D, 0x00000006,
++    0x0000001E, 0x00000014, 0x0004003D, 0x00000006, 0x0000001F, 0x00000014, 0x00050085, 0x00000006,
++    0x00000020, 0x0000001F, 0x0000001E, 0x0003003E, 0x00000014, 0x00000020, 0x0004003D, 0x00000006,
++    0x00000021, 0x00000018, 0x0004003D, 0x00000006, 0x00000022, 0x00000014, 0x00050085, 0x00000006,
++    0x00000023, 0x00000021, 0x00000022, 0x000200FE, 0x00000023, 0x00010038, 0x00050036, 0x0000000C,
++    0x00000012, 0x00000000, 0x0000000D, 0x00030037, 0x00000007, 0x0000000E, 0x00030037, 0x00000007,
++    0x0000000F, 0x00030037, 0x00000007, 0x00000010, 0x00030037, 0x00000007, 0x00000011, 0x000200F8,
++    0x00000013, 0x0004003B, 0x00000007, 0x00000026, 0x00000007, 0x0004003B, 0x00000007, 0x00000038,
++    0x00000007, 0x0004003B, 0x00000007, 0x00000039, 0x00000007, 0x0004003D, 0x00000006, 0x00000027,
++    0x0000000E, 0x0004003D, 0x00000006, 0x00000028, 0x0000000E, 0x00050085, 0x00000006, 0x00000029,
++    0x00000027, 0x00000028, 0x0004003D, 0x00000006, 0x0000002A, 0x0000000F, 0x0004003D, 0x00000006,
++    0x0000002B, 0x0000000F, 0x00050085, 0x00000006, 0x0000002C, 0x0000002A, 0x0000002B, 0x00050081,
++    0x00000006, 0x0000002D, 0x00000029, 0x0000002C, 0x00050085, 0x00000006, 0x0000002F, 0x0000002D,
++    0x0000002E, 0x0004003D, 0x00000006, 0x00000030, 0x00000010, 0x0006000C, 0x00000006, 0x00000031,
++    0x00000001, 0x00000004, 0x00000030, 0x0004003D, 0x00000006, 0x00000032, 0x00000011, 0x00050085,
++    0x00000006, 0x00000033, 0x00000031, 0x00000032, 0x0008000C, 0x00000006, 0x00000036, 0x00000001,
++    0x0000002B, 0x00000033, 0x00000034, 0x00000035, 0x00050081, 0x00000006, 0x00000037, 0x0000002F,
++    0x00000036, 0x0003003E, 0x00000026, 0x00000037, 0x0004003D, 0x00000006, 0x0000003A, 0x00000026,
++    0x0003003E, 0x00000039, 0x0000003A, 0x00050039, 0x00000006, 0x0000003B, 0x0000000A, 0x00000039,
++    0x0003003E, 0x00000038, 0x0000003B, 0x0004003D, 0x00000006, 0x0000003C, 0x00000038, 0x0004003D,
++    0x00000006, 0x0000003D, 0x00000038, 0x0004003D, 0x00000006, 0x0000003E, 0x00000010, 0x00050085,
++    0x00000006, 0x0000003F, 0x0000003D, 0x0000003E, 0x00050050, 0x0000000C, 0x00000040, 0x0000003C,
++    0x0000003F, 0x000200FE, 0x00000040, 0x00010038,
++};
+--- a/src/ui/surface_android.cpp
++++ b/src/ui/surface_android.cpp
+@@ -0,0 +1,25 @@
++/**
++ * Android ANativeWindow surface. Based on Xenia's surface_android.cc (BSD license).
++ */
++
++#include <rex/ui/surface_android.h>
++
++namespace rex {
++namespace ui {
++
++bool AndroidNativeWindowSurface::GetSizeImpl(uint32_t& width_out, uint32_t& height_out) const {
++  if (!window_) {
++    return false;
++  }
++  int32_t width = ANativeWindow_getWidth(window_);
++  int32_t height = ANativeWindow_getHeight(window_);
++  if (width <= 0 || height <= 0) {
++    return false;
++  }
++  width_out = uint32_t(width);
++  height_out = uint32_t(height);
++  return true;
++}
++
++}  // namespace ui
++}  // namespace rex
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -58,6 +58,17 @@
+ REXCVAR_DEFINE_BOOL(vulkan_allow_present_mode_fifo_relaxed, true, "UI/Vulkan",
+                     "Allow FIFO relaxed present mode");
+ 
++REXCVAR_DEFINE_BOOL(present_sgsr, false, "UI/Presenter",
++                    "Stretch the guest output with Snapdragon Game Super Resolution 1 (edge-aware "
++                    "upscale and sharpening in one pass) instead of bilinear filtering")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
++REXCVAR_DEFINE_INT32(present_max_height, 0, "UI/Presenter",
++                     "Largest swapchain height (0 = the window's own); a smaller swapchain is "
++                     "stretched to the window by the OS (on Android, by the display hardware)")
++    .range(0, 16384)
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
+ namespace rex {
+ namespace ui {
+ namespace vulkan {
+@@ -109,6 +120,7 @@
+ namespace shaders {
+ #include "../shaders/vulkan_spirv/guest_output_bilinear_dither_ps.h"
+ #include "../shaders/vulkan_spirv/guest_output_bilinear_ps.h"
++#include "../shaders/vulkan_spirv/guest_output_sgsr1_ps.h"
+ #if defined(REX_HAS_FIDELITYFX_SDK)
+ #include "../shaders/vulkan_spirv/guest_output_ffx_cas_resample_dither_ps.h"
+ #include "../shaders/vulkan_spirv/guest_output_ffx_cas_resample_ps.h"
+@@ -1138,6 +1150,12 @@
+   // requirements - the maximum 2D framebuffer size on the specific physical
+   // device, and the minimum swap chain size on the whole instance - fail to
+   // create until the surface becomes smaller).
++  // A smaller swapchain than the window, same shape: the OS stretches it to the window.
++  if (int32_t max_height = REXCVAR_GET(present_max_height);
++      max_height > 0 && height > uint32_t(max_height)) {
++    width = std::max(uint32_t(1), uint32_t((uint64_t(width) * uint32_t(max_height) + height / 2) / height));
++    height = uint32_t(max_height);
++  }
+   VkExtent2D max_framebuffer_extent = util::GetMax2DFramebufferExtent(vulkan_device->properties());
+   VkExtent2D image_extent;
+   image_extent.width = std::min(std::max(std::min(width, max_framebuffer_extent.width),
+@@ -2382,8 +2400,16 @@
+     GuestOutputPaintEffect guest_output_paint_effect = GuestOutputPaintEffect(i);
+     switch (guest_output_paint_effect) {
+       case GuestOutputPaintEffect::kBilinear:
+-        shader_module_create_info.codeSize = sizeof(shaders::guest_output_bilinear_ps);
+-        shader_module_create_info.pCode = shaders::guest_output_bilinear_ps;
++        // SGSR takes the same inputs as the bilinear pass (texture, sampler, output offset and
++        // size), so it stands in for it.
++        if (REXCVAR_GET(present_sgsr)) {
++          shader_module_create_info.codeSize = sizeof(shaders::guest_output_sgsr1_ps);
++          shader_module_create_info.pCode = shaders::guest_output_sgsr1_ps;
++          REXLOG_INFO("VulkanPresenter: guest output stretched with Snapdragon GSR 1");
++        } else {
++          shader_module_create_info.codeSize = sizeof(shaders::guest_output_bilinear_ps);
++          shader_module_create_info.pCode = shaders::guest_output_bilinear_ps;
++        }
+         break;
+       case GuestOutputPaintEffect::kBilinearDither:
+         shader_module_create_info.codeSize = sizeof(shaders::guest_output_bilinear_dither_ps);
+--- a/src/ui/window_sdl.cpp
++++ b/src/ui/window_sdl.cpp
+@@ -35,6 +35,8 @@
+ #include <SDL3/SDL_metal.h>
+ 
+ #include <rex/ui/surface_mac.h>
++#elif REX_PLATFORM_ANDROID
++#include <rex/ui/surface_android.h>
+ #else
+ #include <X11/Xlib-xcb.h>
+ #include <rex/ui/surface_gnulinux.h>
+@@ -398,6 +400,15 @@
+       SDL_Metal_DestroyView(metal_view);
+     }
+   }
++#elif REX_PLATFORM_ANDROID
++  SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);
++  if (allowed_types & Surface::kTypeFlag_AndroidNativeWindow) {
++    auto* native_window = static_cast<ANativeWindow*>(
++        SDL_GetPointerProperty(props, SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr));
++    if (native_window) {
++      return std::make_unique<AndroidNativeWindowSurface>(native_window);
++    }
++  }
+ #else
+   SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);
+   if (allowed_types & Surface::kTypeFlag_WaylandSurface) {
+@@ -439,6 +450,14 @@
+   OnPaint();
+ }
+ 
++#if REX_PLATFORM_ANDROID
++void WindowSDL::HandleAppBackground(bool background) {
++  REXLOG_INFO("Android: app {} the background; {} the presentation surface", background ? "entering" : "leaving",
++              background ? "releasing" : "recreating");
++  OnSurfaceChanged(!background);
++}
++#endif
++
+ void WindowSDL::HandleWindowEvent(SDL_Event& event) {
+   WindowDestructionReceiver destruction_receiver(this);
+   switch (event.type) {
+--- a/src/ui/windowed_app_context_sdl.cpp
++++ b/src/ui/windowed_app_context_sdl.cpp
+@@ -175,6 +175,16 @@
+       }
+       break;
+     }
++#if REX_PLATFORM_ANDROID
++    case SDL_EVENT_WILL_ENTER_BACKGROUND:
++    case SDL_EVENT_DID_ENTER_FOREGROUND: {
++      bool background = event.type == SDL_EVENT_WILL_ENTER_BACKGROUND;
++      std::vector<WindowSDL*> windows;
++      for (const auto& [id, window] : windows_) windows.push_back(window);
++      for (WindowSDL* window : windows) window->HandleAppBackground(background);
++      break;
++    }
++#endif
+     default:
+       break;
+   }

@@ -1,0 +1,18 @@
+
+[project]
+name = "lightningreturns"
+sdk_version = "0.10.0"
+game_root = "@GAME_ROOT@"
+
+[entrypoint]
+file_path = "@GAME_ROOT@/default.xex"
+out_directory_path = "generated/default"
+# Lightning Returns port: keep guest registers in host locals instead of the context struct
+# (frame rate). r0/r11/r12 and non-volatile registers stay in the context: the game's
+# save/restore helpers (__savefpr_* etc.) read r11/r12 from it.
+ctr_as_local = true
+xer_as_local = true
+reserved_as_local = true
+cr_as_local = true
+includes = ["analysis/lr_missing_branches.toml", "analysis/lr_startup_thunks.toml", "analysis/lr_five_startup_wrappers.toml", "analysis/lr_gpu_dispatch_82D71400.toml", "analysis/lr_vtable_missing_functions.toml", "analysis/lr_verified_pointer_entries.toml", "analysis/lr_dispatch_gap_82B2E420.toml", "analysis/lr_virtual_thunks.toml", "analysis/lr_data_pointer_functions.toml", "analysis/lr_code_pointer_functions.toml", "analysis/lr_bink_switch_tables.toml"]
+

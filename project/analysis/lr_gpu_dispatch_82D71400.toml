@@ -1,0 +1,3 @@
+# Lightning Returns PowerPC dispatch function. Exact length excludes four-byte padding.
+[functions]
+0x82D71400 = { size = 244 }

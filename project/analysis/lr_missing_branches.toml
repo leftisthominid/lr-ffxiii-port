@@ -1,0 +1,28 @@
+# Game-specific PDATA-gap hints for LR Xbox 360 Title ID 5351081B.
+# NOT verified independent functions: validate execution before claiming playable.
+[functions]
+0x825D3500 = { size = 8 } # terminal: b
+0x825D4580 = { size = 8 } # terminal: b
+0x825D4A48 = { size = 8 } # terminal: b
+0x825D4AD8 = { size = 8 } # terminal: b
+0x825D4AF0 = { size = 8 } # terminal: b
+0x825D4B08 = { size = 8 } # terminal: b
+0x825D51C0 = { size = 8 } # terminal: b
+0x82651A88 = { size = 56 } # terminal: b
+0x8288DF38 = { size = 16 } # terminal: b
+0x828B9550 = { size = 20 } # terminal: blr
+0x828FDF18 = { size = 32 } # terminal: blr
+0x8292C450 = { size = 48 } # terminal: blr
+0x829DF140 = { size = 68 } # terminal: blr
+0x82A08B70 = { size = 16 } # terminal: blr
+0x82AAAA88 = { size = 24 } # terminal: blr
+0x82AE8B58 = { size = 68 } # terminal: blr
+0x82AE8D38 = { size = 68 } # terminal: blr
+0x82B2E440 = { size = 8 } # terminal: b
+0x82BA1260 = { size = 4 } # terminal: blr
+0x82C10DF8 = { size = 8 } # terminal: b
+0x82C10E00 = { size = 24 } # terminal: blr
+0x82C18148 = { size = 120 } # terminal: blr
+0x82C36678 = { size = 8 } # terminal: b
+0x82C4C960 = { size = 20 } # terminal: bctr
+0x82CF30B0 = { size = 4 } # terminal: b

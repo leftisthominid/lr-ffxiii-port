@@ -1,0 +1,8 @@
+# SHA256-verified contiguous stub region. Existing 0x82B2E440 size 8 stays in lr_missing_branches.toml.
+[functions]
+0x82B2E420 = { size = 8 }
+0x82B2E428 = { size = 8 }
+0x82B2E430 = { size = 8 }
+0x82B2E438 = { size = 8 }
+0x82B2E448 = { size = 8 }
+0x82B2E450 = { size = 48 }

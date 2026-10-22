@@ -1,0 +1,8 @@
+# Five independently verified 12-byte tail-call wrappers for Lightning Returns 5351081B.
+# 4 bytes of zero padding after each; do not include padding in function size.
+[functions]
+0x82E4EAF0 = { size = 12 } # -> 0x82D1EB28
+0x82E4EB00 = { size = 12 } # -> 0x82D1EB28
+0x82E4EB10 = { size = 12 } # -> 0x82D1EB28
+0x82E4EB20 = { size = 12 } # -> 0x82D1EB28
+0x82E4EB30 = { size = 12 } # -> 0x82D1EB28

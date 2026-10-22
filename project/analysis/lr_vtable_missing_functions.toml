@@ -1,0 +1,24 @@
+# Missing PowerPC vtable functions; derived from verified X360 .rdata and bounded by .pdata.
+[functions]
+0x82D6BDF0 = { size = 8 }
+0x82D6BDF8 = { size = 8 }
+0x82D6BE10 = { size = 8 }
+0x82D6BE18 = { size = 88 }
+0x82D6BE70 = { size = 8 }
+0x82D713D8 = { size = 8 }
+0x82D713E8 = { size = 8 }
+0x82D713F0 = { size = 8 }
+0x82D713F8 = { size = 8 }
+0x82D727A0 = { size = 8 }
+0x82D727B0 = { size = 8 }
+0x82D727B8 = { size = 8 }
+0x82D727C0 = { size = 8 }
+0x82D727C8 = { size = 8 }
+0x82D727D0 = { size = 8 }
+0x82D727D8 = { size = 8 }
+0x82D727E0 = { size = 8 }
+0x82D727E8 = { size = 256 }
+0x82D72F28 = { size = 8 }
+0x82D75E08 = { size = 52 }
+0x82D7C9D8 = { size = 24 }
+0x82D7D5D8 = { size = 8 }

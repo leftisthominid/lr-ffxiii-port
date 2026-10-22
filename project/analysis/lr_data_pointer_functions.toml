@@ -1,0 +1,39 @@
+# Functions reached only through pointers in .rdata/.data (vtables), with no .pdata entry.
+# Each starts right after an unconditional b/blr/bctr, is not a branch target inside another
+# function, and its size ends at its own blr/b or at the entry of the following function.
+[functions]
+0x822E12D8 = { size = 4 }
+0x8246BD08 = { size = 36 }
+0x82482DD0 = { size = 8 }
+0x824AC5E8 = { size = 12 }
+0x8251FD68 = { size = 16 }
+0x8251FD88 = { size = 16 }
+0x8251FDA8 = { size = 16 }
+0x8251FDC8 = { size = 16 }
+0x825BCC68 = { size = 32 }
+0x825C4548 = { size = 24 }
+0x825EB1F0 = { size = 20 }
+0x825EB218 = { size = 20 }
+0x825EB240 = { size = 20 }
+0x826417B0 = { size = 40 }
+0x826B8878 = { size = 4 }
+0x8298EE28 = { size = 4 }
+0x829FAD10 = { size = 16 }
+0x829FAD30 = { size = 16 }
+0x829FAD50 = { size = 16 }
+0x829FAD70 = { size = 16 }
+0x82A09328 = { size = 64 }
+0x82ACD588 = { size = 20 }
+0x82AE7E58 = { size = 68 }
+0x82B06690 = { size = 20 }
+0x82B0E428 = { size = 20 }
+0x82B0E450 = { size = 20 }
+0x82B11098 = { size = 28 }
+0x82B3A338 = { size = 20 }
+0x82C741A0 = { size = 4 }
+0x82CEB380 = { size = 16 }
+0x82CEB450 = { size = 16 }
+0x82CEDD60 = { size = 16 }
+0x82CEE850 = { size = 4 }
+0x82D6BE00 = { size = 8 }
+0x82DC8550 = { size = 4 }

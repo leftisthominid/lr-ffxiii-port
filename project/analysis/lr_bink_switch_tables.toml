@@ -1,0 +1,19 @@
+# Bink 2 decoder (BINK section) switches written in hand assembly with no bounds check.
+# Codegen inferred too few cases from the surrounding code; an index past the inferred range
+# hit the generated __builtin_trap (Windows exception 0xC000001D at the first Bink frame).
+# Labels are the full 11-entry tables read from the original image.
+
+[[switch_tables]]
+address = 0x82E9E7DC
+register = 10
+labels = [0x82E9E80C, 0x82E9E820, 0x82E9E870, 0x82E9E8C0, 0x82E9E910, 0x82E9E960, 0x82E9E9A8, 0x82E9E9F8, 0x82E9EA48, 0x82E9EAC4, 0x82E9EB40]
+
+[[switch_tables]]
+address = 0x82E9D198
+register = 20
+labels = [0x82E9D1C8, 0x82E9D1D8, 0x82E9D360, 0x82E9D4E8, 0x82E9D670, 0x82E9D7F8, 0x82E9D980, 0x82E9DB08, 0x82E9DC90, 0x82E9DE3C, 0x82E9DFE8]
+
+[[switch_tables]]
+address = 0x82E9A8D8
+register = 19
+labels = [0x82E9A908, 0x82E9A930, 0x82E9AB14, 0x82E9ACF8, 0x82E9AEDC, 0x82E9B0C0, 0x82E9B2A4, 0x82E9B488, 0x82E9B66C, 0x82E9B89C, 0x82E9BACC]

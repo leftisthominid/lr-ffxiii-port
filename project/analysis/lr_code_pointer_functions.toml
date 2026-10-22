@@ -1,0 +1,22 @@
+# Functions whose address is built in code (lis/addi) and passed as a callback (script command
+# thunks, atexit destructors), with no .pdata entry. Each starts right after an unconditional
+# b/blr/bctr and is not a branch target inside another function.
+[functions]
+0x82399BD8 = { size = 4 }
+0x825BC4F8 = { size = 8 }
+0x825BC500 = { size = 8 }
+0x825BC508 = { size = 8 }
+0x825BC758 = { size = 8 }
+0x825BE498 = { size = 8 }
+0x825BE4F0 = { size = 8 }
+0x825BF508 = { size = 8 }
+0x825BF7F0 = { size = 8 }
+0x825BF800 = { size = 8 }
+0x82E85D18 = { size = 24 }
+0x82E85D30 = { size = 20 }
+0x82E85D78 = { size = 20 }
+0x82E86328 = { size = 4 }
+# 8-byte lwz/b thunks that the entries above tail-branch into; codegen had merged each into
+# the preceding thunk because neither has a .pdata entry.
+0x825D4AD0 = { size = 8 }
+0x825D5308 = { size = 8 }
