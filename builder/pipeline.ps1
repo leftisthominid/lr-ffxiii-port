@@ -233,8 +233,11 @@ function Step-Install($state, $p) {
   foreach ($f in 'lightningreturns.exe', 'rexruntime.dll', 'rexgpu-xenos.dll') {
     Copy-Item -LiteralPath (Join-Path $p.build $f) -Destination $p.install -Force
   }
+  $launchFile = Join-Path $p.install 'lightningreturns_launch.txt'
   $launch = @('# Written by the builder: where the Xbox 360 game files are (only read).', "game_data_root = $($p.game)")
-  [IO.File]::WriteAllLines((Join-Path $p.install 'lightningreturns_launch.txt'), [string[]]$launch)
+  # LR_ settings already in the file (added by later steps or by hand, e.g. LR_TEXTURE_USER) stay.
+  if (Test-Path -LiteralPath $launchFile) { $launch += @(Get-Content -LiteralPath $launchFile | Where-Object { $_ -match '^\s*LR_' }) }
+  [IO.File]::WriteAllLines($launchFile, [string[]]$launch)
   Say "  $($p.install)\lightningreturns.exe"
   $lnk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Lightning Returns.lnk'
   if ($state.shortcut -and -not (Test-Path -LiteralPath $lnk)) {
