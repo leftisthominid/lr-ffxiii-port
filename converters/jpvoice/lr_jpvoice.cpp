@@ -13,6 +13,8 @@
 //   lr_jpvoice --wpd <360 english.wpd> <steam japanese.wpd> <out.wpd>
 //   lr_jpvoice --lipsync <360 file> <steam english file> <steam japanese file> <out file>
 //   lr_jpvoice [--ffmpeg <ffmpeg>] --dlc <patch folder> <Steam game folder> <content folder>...
+//   lr_jpvoice --files <patch folder> <360 game folder> <file>...   (mods: replace game files by name)
+//   lr_jpvoice --remove-files <patch folder> <360 game folder> <file name>...
 //   lr_jpvoice --list <filelist.bin>
 //   lr_jpvoice --extract <360 game folder> <Steam game folder> <out folder> <path part>...
 //
@@ -1581,6 +1583,91 @@ static int extract(const fs::path& root360, const fs::path& rootSteam, const fs:
 // the existing patch in <patch>: appended after the base game's files (dlc_base.txt keeps
 // where those end, so running again replaces the DLC files instead of adding them twice).
 // Only the patch folder is written.
+// Replaces game files with files of the same name (mods, e.g. a character model): each file is
+// matched by its name to one entry of the game's own file lists (c392.x360.trb ->
+// chr/pc/c392/bin/c392.x360.trb), appended to the patch archive and listed under that entry's
+// code, so the game loads it instead of its own. The list as it was before the first one is kept
+// as filelist_patch_u.x360.bin.before_mods; mods.txt names the files the patch replaces.
+// remove: the named files are taken out of the list again (the game's own are used).
+static int patch_files(const fs::path& patchDir, const fs::path& root360, const std::vector<fs::path>& files, bool remove) {
+  const fs::path listPath = patchDir / "filelist_patch_u.x360.bin", arcPath = patchDir / "white_patch_u.x360.bin";
+  if (!fs::exists(listPath) || !fs::exists(arcPath))
+    throw std::runtime_error("no patch in " + patchDir.string() + " (the Japanese voice step makes it)");
+  auto sources = load_sources(root360 / "weiss_data", "u", "x360");
+  struct Target { const Entry* e; fs::path file; Bytes data; };
+  std::vector<Target> targets;
+  for (auto& f : files) {
+    const std::string name = lower(f.filename().string());
+    std::map<std::pair<uint8_t, uint32_t>, const Entry*> hits;
+    for (auto& s : sources)
+      for (auto& e : s.entries) {
+        std::string p = lower(e.path);
+        size_t slash = p.rfind('/');
+        if ((slash == std::string::npos ? p : p.substr(slash + 1)) == name) hits.emplace(std::make_pair(e.ftype, e.code), &e);
+      }
+    if (hits.empty()) throw std::runtime_error(name + " is not the name of a file of the game");
+    if (hits.size() > 1) {
+      for (auto& h : hits) printf("  %s\n", h.second->path.c_str());
+      throw std::runtime_error("more than one game file is called " + name);
+    }
+    Target t{hits.begin()->second, f, {}};
+    if (!remove) {
+      t.data = read_file(f);
+      if (t.data.empty()) throw std::runtime_error(f.string() + " is empty");
+    }
+    targets.push_back(std::move(t));
+  }
+  const fs::path backup = patchDir / "filelist_patch_u.x360.bin.before_mods";
+  if (!fs::exists(backup)) fs::copy_file(listPath, backup);
+  std::set<std::pair<uint8_t, uint32_t>> codes;
+  for (auto& t : targets) codes.insert({t.e->ftype, t.e->code});
+  std::vector<PatchFile> list;
+  for (auto& e : parse_filelist(read_file(listPath)))
+    if (!codes.count({e.ftype, e.code})) list.push_back(PatchFile{e.code, e.ftype, e.path, e.sector, e.usize});
+  if (!remove) {
+    // the data first, then the list naming it
+    std::fstream arc(arcPath, std::ios::binary | std::ios::in | std::ios::out | std::ios::ate);
+    if (!arc) throw std::runtime_error("cannot write " + arcPath.string());
+    uint64_t pos = uint64_t(arc.tellp());
+    static const char zeros[2048] = {0};
+    for (auto& t : targets) {
+      uint64_t start = align_up(pos, 2048);
+      arc.write(zeros, std::streamsize(start - pos));
+      arc.write((const char*)t.data.data(), std::streamsize(t.data.size()));
+      pos = start + t.data.size();
+      list.push_back(PatchFile{t.e->code, t.e->ftype, t.e->path, start / 2048, uint32_t(t.data.size())});
+      printf("  %s -> %s (%zu bytes; the game's own: %u)\n", t.file.filename().string().c_str(), t.e->path.c_str(),
+             t.data.size(), t.e->usize);
+    }
+    arc.write(zeros, std::streamsize(align_up(pos, 2048) - pos));
+    arc.close();
+    if (!arc) throw std::runtime_error("writing " + arcPath.string() + " failed");
+  }
+  write_filelist(listPath, list);
+  // mods.txt: the game files the patch replaces now
+  std::map<std::string, std::string> mods;
+  {
+    std::ifstream in(patchDir / "mods.txt");
+    std::string line;
+    while (std::getline(in, line)) {
+      size_t tab = line.find('\t');
+      if (tab != std::string::npos) mods[line.substr(0, tab)] = line.substr(tab + 1);
+    }
+  }
+  for (auto& t : targets) {
+    if (remove) {
+      printf("  %s: the game's own file again\n", t.e->path.c_str());
+      mods.erase(t.e->path);
+    } else {
+      mods[t.e->path] = t.file.filename().string();
+    }
+  }
+  std::ofstream out(patchDir / "mods.txt", std::ios::trunc);
+  for (auto& m : mods) out << m.first << '\t' << m.second << '\n';
+  printf("Patch now replaces %zu game file(s) with mods.\n", mods.size());
+  return 0;
+}
+
 static int add_dlc(const fs::path& patchDir, const fs::path& rootSteam, const std::vector<fs::path>& contents) {
   const fs::path listPath = patchDir / "filelist_patch_u.x360.bin", arcPath = patchDir / "white_patch_u.x360.bin";
   if (!fs::exists(listPath) || !fs::exists(arcPath))
@@ -1789,6 +1876,10 @@ int main(int argc, char** argv) {
     if (argc >= 6 && !strcmp(argv[1], "--extract")) {
       std::vector<std::string> patterns(argv + 5, argv + argc);
       return extract(argv[2], argv[3], argv[4], patterns);
+    }
+    if (argc >= 5 && (!strcmp(argv[1], "--files") || !strcmp(argv[1], "--remove-files"))) {
+      std::vector<fs::path> files(argv + 4, argv + argc);
+      return patch_files(argv[2], argv[3], files, !strcmp(argv[1], "--remove-files"));
     }
     if (argc >= 5 && !strcmp(argv[1], "--dlc")) {
       std::vector<fs::path> contents(argv + 4, argv + argc);
