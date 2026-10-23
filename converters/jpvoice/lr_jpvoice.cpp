@@ -2,7 +2,7 @@
 //
 // Reads the English voice files of the Xbox 360 release and the Japanese voice files of the
 // Steam release (same file codes on both platforms), converts every Japanese voice file to the
-// 360 layout and writes them as a 360 update patch:
+// 360 layout, and writes them as a 360 update patch:
 //   <out>/filelist_patch_u.x360.bin  (plain file list)
 //   <out>/white_patch_u.x360.bin     (stored files)
 // The game reads that folder as UPDATE:\ (--update_data_root) and then loads the patched
@@ -569,7 +569,7 @@ static bool block_to_be(uint8_t* b, size_t len, std::string& why) {
 // Most Steam voices are MS ADPCM (codec 12), which the 360 sound driver does not play. They
 // are decoded here and re-encoded to Ogg Vorbis by ffmpeg (g_ffmpeg), then wrapped the way
 // the 360 files are: Ogg header (version 2, header pages XOR'ed with one byte), a seek table
-// with one entry per 0.1 s (byte offset of the page holding that sample) and the audio pages.
+// with one entry per 0.1 s (byte offset of the page holding that sample), and the audio pages.
 
 static std::string g_ffmpeg;  // set from the command line; empty: MS ADPCM files stay English
 static fs::path g_tmp;
@@ -636,7 +636,7 @@ static int run_ffmpeg(const std::vector<std::string>& args) {
 
 // The 360 voices are 48000 Hz Ogg streams with serial number 0 and pages of about half a second
 // (the game follows a voice's playback by them; lip-sync stayed still with Steam's 48011 Hz, one
-// big page and a random serial). The output is made the same way: 48011 Hz is resampled to 48000.
+// big page, and a random serial). The output is made the same way: 48011 Hz is resampled to 48000.
 static bool encode_ogg(const std::vector<int16_t>& pcm, int ch, int& sr, Bytes& ogg, std::string& why) {
   if (g_ffmpeg.empty()) { why = "MS ADPCM voice (needs ffmpeg)"; return false; }
   unsigned id = g_tmp_counter++;
@@ -1363,7 +1363,7 @@ static int build(const fs::path& root360, const fs::path& rootSteam, const fs::p
   cv_in.notify_all();
   for (auto& w : workers) w.join();
 
-  // Japanese lip-sync and facial motion (event DataSets, character motion and lsdpack files).
+  // Japanese lip-sync and facial motion (event DataSets, character motion, and lsdpack files).
   int lipOk = 0, lipSame = 0, lipKept = 0, textOk = 0, textMissing = 0, textBad = 0;
   std::map<std::string, int> lipReasons;
   try {
@@ -1585,7 +1585,7 @@ static int extract(const fs::path& root360, const fs::path& rootSteam, const fs:
 // Only the patch folder is written.
 // Replaces game files with files of the same name (mods, e.g. a character model): each file is
 // matched by its name to one entry of the game's own file lists (c392.x360.trb ->
-// chr/pc/c392/bin/c392.x360.trb), appended to the patch archive and listed under that entry's
+// chr/pc/c392/bin/c392.x360.trb), appended to the patch archive, and listed under that entry's
 // code, so the game loads it instead of its own. The list as it was before the first one is kept
 // as filelist_patch_u.x360.bin.before_mods; mods.txt names the files the patch replaces.
 // remove: the named files are taken out of the list again (the game's own are used).

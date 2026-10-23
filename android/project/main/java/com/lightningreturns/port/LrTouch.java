@@ -609,8 +609,8 @@ final class LrTouch {
             ctls.add(Ctl.button(BACK, pic.centerX() - pill * 0.62f, pic.top + pad + ph / 2, pill, ph, Ctl.PILL));
             ctls.add(Ctl.button(START, pic.centerX() + pill * 0.62f, pic.top + pad + ph / 2, pill, ph, Ctl.PILL));
             // Two wheels, one per thumb, in the bottom corners of the screen (over the picture):
-            // left: the stick, with the d-pad, L3, LT and LB on an arc around it;
-            // right: the face buttons, with RB, RT, R3 and the right stick on an arc around them.
+            // left: the stick, with the d-pad, L3, LT, and LB on an arc around it;
+            // right: the face buttons, with RB, RT, R3, and the right stick on an arc around them.
             // A thumb resting on the stick or the face buttons reaches the arc by rotating.
             float u = h * 0.1f * SIZE_SCALE[Math.max(0, Math.min(2, touchSize))];
             // Wheel centres a little below the middle of the screen, where the thumbs rest when the

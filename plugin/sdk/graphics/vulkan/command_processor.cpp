@@ -60,7 +60,7 @@
 // Lightning Returns port, diagnostics: one-frame capture. When <LR_CAPTURE_DIR>/request exists at
 // a frame boundary, the next frame is recorded into <LR_CAPTURE_DIR>/cap_<time>/: every resolve
 // (read back to guest memory, then written raw with its copy registers), every draw (shaders,
-// render targets, texture fetch constants, pixel shader float constants) and the ucode of each
+// render targets, texture fetch constants, pixel shader float constants), and the ucode of each
 // shader used, so a frame from a device can be inspected offline.
 namespace {
 struct LrCapture {
@@ -7430,7 +7430,7 @@ void VulkanCommandProcessor::LrCaptureTextures(const VulkanShader* ps) {
 
 // Frame capture, at the end of the frame: each listed texture's (up to 64, 200 MB) base level three times - the
 // guest memory (tex_NN_<addr>_guest.bin), the GPU copy of guest memory the texture is loaded
-// from (_gpubuf.bin) and the host image itself after loading (_image.bin, in the host format) -
+// from (_gpubuf.bin), and the host image itself after loading (_image.bin, in the host format) -
 // to see where a texture's data goes wrong.
 void VulkanCommandProcessor::LrCaptureReadTextures() {
   FILE* f = g_lr_capture.log;

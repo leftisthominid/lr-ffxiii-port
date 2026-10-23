@@ -506,8 +506,8 @@ struct ArchiveSet {
 // --fonts: high-resolution replacements for the game's bitmap fonts.
 //
 // The game draws all menu / dialogue / subtitle text from three glyph atlases in
-// gui/resident/system_jp.x360.xgr (used by every language): wfnt16 (1024x1024), wfnt18 and
-// wfnt28 (2048x2048), all DXT1 with white/black endpoints, i.e. 2-bit anti-aliased coverage.
+// gui/resident/system_jp.x360.xgr (used by every language): wfnt16 (1024x1024), wfnt18
+// (2048x2048), and wfnt28 (2048x2048), all DXT1 with white/black endpoints, i.e. 2-bit anti-aliased coverage.
 // The 14-point font reuses the wfnt28 atlas. Each has a .wfl glyph table (wfnt16t, ...). A few
 // number sheets in gui/resident/system (btl_number01/02, w_num) are coverage art too.
 // Glyph UVs are normalized and the shaders sample with normalized coordinates (outline taps
@@ -515,7 +515,7 @@ struct ArchiveSet {
 //
 // Since the original vector font is not available, the glyph shapes are reconstructed from the
 // coverage: an anti-aliased signed distance field (Gustavson & Strand 2011: the coverage of an
-// edge texel places the edge inside it) is computed per channel, upsampled with a cubic filter
+// edge texel places the edge inside it) is computed per channel, upsampled with a cubic filter,
 // and re-thresholded with a smoothstep about one screen pixel wide. Output: BC1/BC2/BC3 (the
 // format the renderer uses for the guest texture) with a full mip chain, named after the hash
 // of the 360 texture like the PS3 UI set.
@@ -1091,7 +1091,7 @@ int FontsMain(int argc, char** argv) {
                  "       lr_uiconv --fonts-files <sheet.xgr> <sheet.imgb> <output folder> [options]\n"
                  "options: --scale N (2..4, default 4)  --edge T (edge width in output texels, default scale/2)\n"
                  "         --no-mips  --smooth  --bspline  --preview  --tex NAME (texture to convert; repeatable;\n"
-                 "         default: the font atlases, the number sheets and the loading lettering)  --sheet NAME (also read this sheet)\n");
+                 "         default: the font atlases, the number sheets, and the loading lettering)  --sheet NAME (also read this sheet)\n");
     return 1;
   }
   Options opt;
@@ -1112,7 +1112,7 @@ int FontsMain(int argc, char** argv) {
     else if (a == "--sheet") extra_sheets.push_back(next());
     else { std::fprintf(stderr, "unknown option %s\n", a.c_str()); return 1; }
   }
-  if (opt.scale < 2 || opt.scale > 4) { std::fprintf(stderr, "--scale must be 2, 3 or 4\n"); return 1; }
+  if (opt.scale < 2 || opt.scale > 4) { std::fprintf(stderr, "--scale must be 2, 3, or 4\n"); return 1; }
   if (textures.empty())
     textures = {"wfnt16", "wfnt18", "wfnt28", "wfnt16x", "wfnt18x", "wfnt28x", "btl_number01", "btl_number02", "w_num",
                 "nlfont"};  // nlfont: the "NOW... LOADING" lettering

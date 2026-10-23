@@ -126,7 +126,7 @@ class TextureCache {
 
   // Lightning Returns, shader capture (texture_replacement::Registry::capture_enabled): called
   // after RequestTextures; a draw that samples a listed texture records its shaders, texture
-  // bindings and constants in <textures>/capture/ once per vertex + pixel shader pair.
+  // bindings, and constants in <textures>/capture/ once per vertex + pixel shader pair.
   void LrCaptureDraw(const Shader* vertex_shader, const Shader* pixel_shader) {
     if (lr_capture_) {
       LrCaptureListedDraw(vertex_shader, pixel_shader);
@@ -695,7 +695,7 @@ class TextureCache {
   uint32_t lr_keyboard_generation_ = 0;
   // Lightning Returns: replacement work off the GPU thread. Loading a texture only hashes its
   // raw guest bytes; a worker thread untiles and hashes new contents, tries the content
-  // signatures and reads the replacement DDS, and BeginFrame creates the replacement from the
+  // signatures, and reads the replacement DDS; BeginFrame creates the replacement from the
   // result. Texture loads no longer stall the renderer for the decode and file reads.
   struct LrReplaceQueue;
   struct LrRawResult {

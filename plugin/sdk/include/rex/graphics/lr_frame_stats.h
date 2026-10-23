@@ -120,7 +120,7 @@ inline std::atomic<int32_t>& active_resolution_scale() {
 // Post-effect trace (LR_FX_TRACE=1; the Android build sets it), for the battle-exit grey filter
 // flicker on the phone: every frame that crossfades by the blend constant, and the 90 frames
 // after one, logged as one "LR fx" line per frame (time since the last frame, front buffer,
-// draws, the first crossfade draw and its constant) plus that frame's resolves and texture
+// draws, and the first crossfade draw with its constant) plus that frame's resolves and texture
 // loads in order; at most 5000 lines. GPU command thread only.
 struct FxTrace {
   bool on = [] {

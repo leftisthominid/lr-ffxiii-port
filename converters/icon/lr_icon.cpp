@@ -11,7 +11,7 @@
 //       face.png: a square portrait (the face, ideally upscaled 4x with Real-ESRGAN). Writes
 //       lr_icon_full.png (432x432: the portrait over a blurred copy of itself - the Android
 //       adaptive icon background), ic_launcher_<dpi>.png (the portrait as rounded squares,
-//       48-192 px) and lightningreturns.ico (16-256 px).
+//       48-192 px), and lightningreturns.ico (16-256 px).
 //
 // The xex and the tile are only read; nothing from the game is kept in the source.
 #include <algorithm>

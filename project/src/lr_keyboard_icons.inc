@@ -57,7 +57,7 @@ constexpr const char* kKeySlotCvars[24] = {
     "keybind_start",       "keybind_back",        "keybind_lstick_press",  "keybind_rstick_press"};
 
 struct LrIconCode {
-  uint8_t keys;      // 1, 2 (side by side, twice as wide) or 4 (2x2: up left / down right)
+  uint8_t keys;      // 1, 2 (side by side, twice as wide), or 4 (2x2: up left / down right)
   int8_t slot[4];
 };
 // Index = code - 0x40.
@@ -117,7 +117,7 @@ struct LrIconCell {
 };
 
 // Cells in the sheet's empty space: a 7x4 grid of 5-texel cells at (48.5, 104.5), 3x3 at
-// (80.5, 48.5) and 3x2 at (68.5, 72.5). Two-key codes take two cells side by side.
+// (80.5, 48.5), and 3x2 at (68.5, 72.5). Two-key codes take two cells side by side.
 bool lr_icon_layout(LrIconCell (&cells)[kIconCount]) {
   struct Block {
     float x, y;

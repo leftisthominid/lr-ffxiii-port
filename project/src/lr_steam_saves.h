@@ -262,7 +262,7 @@ inline bool SteamToXbox(const std::vector<uint8_t>& pc, std::vector<uint8_t>& ou
 }
 
 // ---------------------------------------------------------------------------------------
-// DLC items the 360 game does not have. A Steam save can hold DLC garbs, weapons, shields and
+// DLC items the 360 game does not have. A Steam save can hold DLC garbs, weapons, shields, and
 // accessories whose 360 pack is not installed; the game lists those ids itself ("items held back",
 // written to dlc_unavailable.txt by the DLC hook). They are taken out of an imported save:
 //   DbEquipMan: 1026 rows of 18 bytes {name[14] ("cos_oa00"), u32}, then 12 bytes;

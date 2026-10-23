@@ -600,7 +600,7 @@ bool Registry::ClaimDump(uint64_t hash) {
 // --- Font atlases (see FontComposite in replacement.h) ---
 // The glyph reconstruction is the font tool's (lr_uiconv --fonts): an anti-aliased signed
 // distance field from the 2-bit coverage, Catmull-Rom upsampling, a smoothstep about one
-// screen pixel wide, box-filtered mips and the same BC1 encoder, so rebuilt blocks match the
+// screen pixel wide, box-filtered mips, and the same BC1 encoder, so rebuilt blocks match the
 // prebuilt atlas around them.
 namespace {
 

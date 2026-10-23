@@ -277,7 +277,7 @@ function Step-Settings($state, $p) {
   }
 }
 
-# Sharp fonts: the game's bitmap font atlases, number sheets and loading lettering rebuilt at 4x
+# Sharp fonts: the game's bitmap font atlases, number sheets, and loading lettering rebuilt at 4x
 # from the 360 game's own glyphs (lr_uiconv --fonts), in the game folder's textures\replace\fonts,
 # which the renderer always uses. Built next to the old set and swapped in when complete.
 function Step-Fonts($state, $p) {
@@ -468,7 +468,7 @@ function Step-JpVoice($state, $p) {
   $out = Join-Path $p.install 'jpvoice'
   $tmp = "$out.new"
   if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
-  Say '  converting the Japanese voices, lip-sync and text (10-30 minutes)...'
+  Say '  converting the Japanese voices, lip-sync, and text (10-30 minutes)...'
   $rc = Invoke-Logged $exe @('--ffmpeg', $ffmpeg, $p.game, $steam, $tmp, (Join-Path $p.work 'jpvoice_samples')) (Join-Path $p.logs 'jpvoice.log')
   if ($rc -ne 0 -and $rc -ne 3) { throw "Converting the Japanese voices failed; see $($p.logs)\jpvoice.log" }
   if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Recurse -Force }

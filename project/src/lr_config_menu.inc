@@ -12,7 +12,7 @@
 //                     which includes the game's restart on returning to the title screen)
 //
 // The items are ordinary entries of the game's config list: same rows, cursor, scrolling,
-// help bar, value popup (A opens it, Up/Down + A picks, B cancels), sounds and fonts. Only
+// help bar, value popup (A opens it, Up/Down + A picks, B cancels), sounds, and fonts. Only
 // the item ids are new; every place that turns an item id into game data is hooked below.
 //
 // How the game's config menu works (static analysis of the 360 executable):
@@ -140,7 +140,7 @@ struct LrItem {
   const char* label;        // keys, at most 15 characters (the game's key buffers are 16)
   const char* help;
   const char* help_unavailable;
-  uint32_t count;           // 2, 3 (built as the game's id 12) or 4 (built as id 0), see the
+  uint32_t count;           // 2, 3 (built as the game's id 12), or 4 (built as id 0), see the
                             // value popup
   const char* value[4];
   const char* value_help[4];
@@ -212,11 +212,11 @@ constexpr LrText kTexts[] = {
     {"$lr_cfm_1", "B / Circle"},
     {"$lr_cfm_1h", "B (Circle) confirms and A (Cross) cancels, as in the Japanese release."},
     {"$lr_fps", "Frame Rate"},
-    {"$lr_fpsh", "Choose the frame rate of the field, battles and scenes."},
+    {"$lr_fpsh", "Choose the frame rate of the field, battles, and scenes."},
     {"$lr_fps_0", "30 fps"},
     {"$lr_fps_0h", "30 frames per second, as on the Xbox 360."},
     {"$lr_fps_1", "60 fps (gameplay)"},
-    {"$lr_fps_1h", "60 fps in the field, battles and menus; cutscenes stay at 30 fps, as in the PC version."},
+    {"$lr_fps_1h", "60 fps in the field, battles, and menus; cutscenes stay at 30 fps, as in the PC version."},
     {"$lr_fps_2", "60 fps (all)"},
     {"$lr_fps_2h", "60 frames per second everywhere, cutscenes included. Game speed stays the same."},
     {"$lr_res", "Resolution"},
@@ -491,7 +491,7 @@ REX_HOOK_RAW(sub_8278D648) {
   uint32_t list = ctx.r3.u32;
   __imp__sub_8278D648(ctx, base);
   // Outerworld is stripped (see lr_hooks.cpp): "Outerworld Services" (id 10), "Outerworld
-  // Characters" (12), "Link with Facebook" (13) and "Link with Twitter" (14) are not listed.
+  // Characters" (12), "Link with Facebook" (13), and "Link with Twitter" (14) are not listed.
   if (!std::getenv("LR_OUTERWORLD_PROMPT")) {
     uint32_t count = ld32(base, list + kListCount), kept = 0;
     for (uint32_t i = 0; i < count; ++i) {
@@ -934,7 +934,7 @@ REX_HOOK_RAW(sub_8278F4A8) {
 // Deleting a save in the game's own Save / Load screen (#SaveLoadX360, GuiSaveLoadX360): X on
 // a save asks "$save_del_xmb00" ("Do you wish to delete save data?", an unused PS3 text). Yes
 // closes the list the way Y (select storage device) does, so the save worker (sub_82658A90)
-// forgets the device, enumerates again and reopens the list; the delete itself runs on that
+// forgets the device, enumerates again, and reopens the list; the delete itself runs on that
 // worker right before it enumerates (sub_82658908), because while the list is open the worker
 // keeps mounting the saves near the cursor and an open save cannot be deleted.
 //   menu (vtable 0x8212AA50): +0x54 product id, +0x110 state (2 = idle), +0x114 hovered display

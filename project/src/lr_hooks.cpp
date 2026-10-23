@@ -165,7 +165,7 @@ REX_HOOK_RAW(sub_827F2C10) {
 // PS3 cinematics. The 360 movies are Bink 2 files, 1280x736 with the picture in the top
 // 720 rows (sub_82D1BDF0 crops 736 to 720); the PS3 release has the same 21 movies as
 // 1280x720 H.264 at a much higher bit rate. Bink keeps playing the 360 file (audio, timing,
-// skipping and looping stay the game's own); each time a frame finishes decoding, the same
+// skipping, and looping stay the game's own); each time a frame finishes decoding, the same
 // frame of the PS3 movie is written over it in the game's frame buffers.
 //
 //   sub_82E8E658  BinkOpen(name, options, flags): name is 8 + 16 characters '@'+nibble
@@ -1262,7 +1262,7 @@ struct LrTimerResolution {
 // showMessageWindow_l -> sub_826FFFE8 -> sub_827153A0 -> sub_8270E260 builds a GuiMessageWindow
 // (vtable 0x82124EF8) and its text setup sub_827CE478 gets the text already resolved in r8
 // (sub_827CB1C8 counts the '|' choices in it); sub_826FDF28 then opens it (vtable +0x13C,
-// sub_827CDE10), the script sleeps until the state byte at +80 is 3 (closed) and reads the
+// sub_827CDE10), and the script sleeps until the state byte at +80 is 3 (closed) and reads the
 // chosen index at +160 (Window.getSelectedItemIndex -> sub_826F87A8; 0 = first choice).
 // Step 27 matched the window against the text LocalizedText::Set (sub_82729450) had resolved,
 // which this text never goes through - so the question stayed. Now any message window whose
@@ -1565,9 +1565,9 @@ REX_HOOK_RAW(sub_827EC7C8) {
 }
 
 // The Outerworld Primers (tips records in db/resident/auto_clip.wdb, each a title, a page
-// text and a picture): "Outerworld services" (atcw_fl034, $watips_f34, the two pages shown
+// text, and a picture): "Outerworld services" (atcw_fl034, $watips_f34, the two pages shown
 // after the question on New Game / Continue) and the Datalog entries about posting, Outerworld
-// characters, Facebook and Twitter (atcw_fl138 - atcw_fl148, atcw_fl155). Tips windows come
+// characters, Facebook, and Twitter (atcw_fl138 - atcw_fl148, atcw_fl155). Tips windows come
 // from three places, all through sub_826F9820 (-> the message factory sub_827114F0):
 //  - Window.showTipsById (sub_8299C3F0): an Outerworld id is popped and the native returns as
 //    if the window had been read and closed (it pushes nothing; vm+48 stays 0);
@@ -1669,7 +1669,7 @@ REX_HOOK_RAW(sub_826F6E80) {
 //    returns at once with the answer that keeps Outerworld off (the second choice - "No",
 //    "I disagree" - or "OK" for a notice), the way the native returns when no window is
 //    needed: arguments popped, the answer pushed as an int. No window is built;
-//  - Settings: "Outerworld Services", "Outerworld Characters", "Link with Facebook" and
+//  - Settings: "Outerworld Services", "Outerworld Characters", "Link with Facebook", and
 //    "Link with Twitter" (config ids 10, 12, 13, 14; see lr_config_menu.inc) are not listed;
 //  - Rewards Barter Shop: the "Outerworld Rewards" row ($shop_96) stays. It was skipped
 //    (not added through sub_8283BEA8), but the shop is built for its three rows (ids 0-2,
@@ -1910,7 +1910,7 @@ REX_HOOK_RAW(sub_82D329C0) {
   if (g_lr_input_blocked.load(std::memory_order_relaxed) && ctx.r3.u32 == 0 && lr_state) {
     std::memset(base + lr_state + 4, 0, 12);
   }
-  // The Gamepad Controls picture is up (drawn by the app): A, B, Start or Back closes it, and the
+  // The Gamepad Controls picture is up (drawn by the app): A, B, Start, or Back closes it, and the
   // game sees no buttons until the one that opened it and the one that closed it are released.
   if (int open = g_lr_controls_open.load(std::memory_order_relaxed); open && ctx.r3.u32 == 0 && lr_state) {
     const uint16_t buttons = uint16_t(base[lr_state + 4] << 8 | base[lr_state + 5]);
@@ -2719,7 +2719,7 @@ void LrSettingsInit(const std::filesystem::path& dir) {
     text = lr_read_setting("text.txt");
   }
   g_lr_text_jp.store(!text.empty() && (text[0] == 'j' || text[0] == 'J') ? 1 : 0);
-  // UI style: LR_UI_STYLE overrides ui_style.txt ("auto" - the default -, "360" or "ps3").
+  // UI style: LR_UI_STYLE overrides ui_style.txt ("auto" - the default -, "360", or "ps3").
   std::string style;
   if (const char* env = std::getenv("LR_UI_STYLE"); env && env[0]) style = env;
   else style = lr_read_setting("ui_style.txt");
@@ -2940,7 +2940,7 @@ void LrUiStyleForController(int ps3, const char* name) {
 // and a late registration takes the environment over the config file. The game's own restart
 // on returning to the title screen (lr_relaunch) runs it again, so a menu choice applies there.
 // Choice: LR_RESOLUTION (LR_Play.ps1 -Resolution: saved, then removed so that the restart uses
-// the saved choice), else Documents\lightningreturns\resolution.txt: auto, 720, 1440 or 2160.
+// the saved choice), else Documents\lightningreturns\resolution.txt: auto, 720, 1440, or 2160.
 // Auto = the tallest display's height / 720 rounded up, at most 3 (a 1080p display renders at
 // 1440p, scaled down), as LR_Play.ps1 computes it.
 // ---------------------------------------------------------------------------------------
@@ -3292,7 +3292,7 @@ struct LrHangWatch {
 // calls it; the thread that presents frames (sub_829CB8F0) is the game's main thread, and for
 // each of its frames over 45 ms the log gets one "LR slow frame" line splitting the frame into
 // game code, sleeping, waiting on other threads (with the slowest wait and its caller),
-// waiting for the renderer and presenting. A summary for the main thread comes every 10 s.
+// waiting for the renderer, and presenting. A summary for the main thread comes every 10 s.
 // ---------------------------------------------------------------------------------------
 namespace {
 enum LrWaitKind { kLrSleep, kLrWait, kLrRenderer, kLrKinds };
@@ -3474,7 +3474,7 @@ void lr_log_current_waits() {
                   lr_guest_stack(w->current_sp.load()));
     } else {
       const PPCContext* c = w->ctx.load(std::memory_order_relaxed);
-      REXLOG_WARN("LR hang: game thread {} not in a guest wait (running, spinning or in a lock); lr {:08X}; calls:{}",
+      REXLOG_WARN("LR hang: game thread {} not in a guest wait (running, spinning, or in a lock); lr {:08X}; calls:{}",
                   w->index, c ? uint32_t(c->lr) : 0u, c ? lr_guest_stack(c->r1.u32) : std::string(" ?"));
     }
   }
@@ -3632,12 +3632,12 @@ LR_TIMED_WAIT(829CD360, kLrWait)
 
 // ---------------------------------------------------------------------------------------
 // Job system (sub_829E83F8): the main thread splits each frame phase into jobs, wakes the
-// three worker threads with SetEvent (sub_82D32510, from 829E84A0), runs jobs itself and then
+// three worker threads with SetEvent (sub_82D32510, from 829E84A0), runs jobs itself, and then
 // spins until the workers have cleared their bits. The workers sleep in WaitForSingleObject
 // (sub_82D324D0, from 829E8678) on their own events.
 //
 // Kernel events go through the runtime's handle table, which every kernel call locks with the
-// runtime's one global lock - the lock page faults, memory protection changes and the renderer's
+// runtime's one global lock - the lock page faults, memory protection changes, and the renderer's
 // shared-memory bookkeeping also hold. Step 30's report had the main thread inside SetEvent
 // and spinning for workers that were still asleep in the slow frames. The worker events are
 // host events instead (LR_JOB_EVENTS=kernel keeps the kernel's): a worker registers its event
@@ -4598,7 +4598,7 @@ REX_HOOK_RAW(sub_82D3AC88) {
 }
 
 // The copy loops themselves: sub_82D3ABD8 (any size; from 256 bytes on, 128-byte VMX blocks
-// with cache hints, called by sub_82D3AC88) and sub_82D1ED20 (the small memcpy, byte and word
+// with cache hints, called by sub_82D3AC88) and sub_82D1ED20 (the small memcpy: byte and word
 // moves). Translated, those loops were the busiest code in the user's slow frames (the copy
 // called from sub_82AB4DC0 while areas stream in). Both are plain copies that return the
 // destination - the cache hints do nothing here - so the host's memmove does the same faster.

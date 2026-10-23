@@ -339,7 +339,7 @@ void LrAndroidFrameDone(uint64_t work_us, double frame_rate) {
   ++h.frames;
   int64_t target_ns = int64_t(1e9 / std::clamp(frame_rate, 10.0, 120.0));
   // Pick the threads after the game has started its worker threads, then again every 10 s or so
-  // (the busiest game threads change between the field, battles and scenes).
+  // (the busiest game threads change between the field, battles, and scenes).
   if (!h.session ? h.frames >= 150 : (h.frames % 300) == 0) {
     std::vector<pid_t> threads = LrPickHintThreads(pid_t(gettid()));
     if (threads != h.threads) {

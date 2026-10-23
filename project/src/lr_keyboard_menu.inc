@@ -2,14 +2,14 @@
 // screens, PC).
 //
 // Keyboard Settings is a second view of the game's own Settings list: the same rows, cursor,
-// sounds, help bar and Yes/No dialog. Twelve rows of two commands each, in the Steam version's
+// sounds, help bar, and Yes/No dialog. Twelve rows of two commands each, in the Steam version's
 // order (left: movement, cursor, camera; right: the buttons), every command followed by its
 // button icon - which the key icons (lr_keyboard_icons.inc) turn into the bound key.
 //   Up/Down   row               Left/Right  column (the selected command is highlighted)
 //   A         press the new key (the help bar asks for it; the game sees no input meanwhile)
 //   X         restore this key's default (Yes/No)        B   back to Settings
 // A key another command uses asks whether to swap the two (Yes/No, as Steam). Ctrl, Alt, the
-// Windows keys, Num Lock and Scroll Lock cannot be assigned (Steam's rule).
+// Windows keys, Num Lock, and Scroll Lock cannot be assigned (Steam's rule).
 // Bindings are the runtime's keybind cvars and keyboard.txt in the settings folder.
 
 #include <rex/ui/virtual_key.h>

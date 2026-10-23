@@ -148,7 +148,7 @@ void LrConfigSetUiStyle(int ps3);
 void LrUiStyleForController(int ps3, const char* name);
 
 // With no sound output device (none plugged in, or all disabled) the runtime's audio driver
-// fails to open, the game's XAudio registration fails and the movie player crashes. This
+// fails to open, the game's XAudio registration fails, and the movie player crashes. This
 // backend falls back to a silent driver that takes the game's audio frames at the real rate
 // (256 samples at 48 kHz), so the game runs normally without sound.
 class LrSilentAudioDriver : public rex::audio::AudioDriver {
@@ -273,7 +273,7 @@ class LrFrameOverlay final : public rex::ui::ImGuiDialog {
     float ms[kMax];
     int n = LrRecentFrameTimesMs(ms, kMax);
     if (n < 2) return;
-    // Frame rate over the last half second; the average, slowest and target lines below.
+    // Frame rate over the last half second; the average, slowest, and target lines below.
     double sum = 0;
     int count = 0;
     for (int i = n - 1; i >= 0 && sum < 500.0; --i, ++count) sum += ms[i];

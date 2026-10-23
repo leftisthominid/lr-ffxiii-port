@@ -44,7 +44,7 @@ function Test-Game360([string]$path) {
   $item = Get-Item -LiteralPath $path
   if ($item -is [IO.FileInfo]) {
     if ($item.Extension -ne '.iso') { return @{ kind = ''; why = 'That is a file, but not a disc image (.iso).' } }
-    # XDVDFS ("MICROSOFT*XBOX*MEDIA") at sector 32 of the game partition: plain, XGD2 or XGD3.
+    # XDVDFS ("MICROSOFT*XBOX*MEDIA") at sector 32 of the game partition: plain, XGD2, or XGD3.
     foreach ($base in 0, 0xFD90000, 0x2080000, 0x18300000) {
       $m = Read-Bytes $path ($base + 0x10000) 20
       if ($m -and [Text.Encoding]::ASCII.GetString($m) -eq 'MICROSOFT*XBOX*MEDIA') { return @{ kind = 'iso'; path = $item.FullName } }

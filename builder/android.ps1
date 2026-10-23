@@ -441,7 +441,7 @@ function Step-Phone($state, $p) {
     $hd = Join-Path $dlc 'Headers\00000002'
     if (Test-Path -LiteralPath $hd) { Push $hd "$phoneUser/0000000000000000/5351081B/Headers/" 'the DLC' }
   }
-  # Saves, DLC and settings from this PC, the first time only (the phone keeps its own after that).
+  # Saves, DLC, and settings from this PC, the first time only (the phone keeps its own after that).
   $marker = (& $adb shell "ls $phoneUser/B13EBABEBABEBABE 2>/dev/null") -join ''
   if (-not $marker -and (Test-Path -LiteralPath $p.userData)) {
     foreach ($sub in 'B13EBABEBABEBABE', '0000000000000000', 'ps3_saves', 'steam_saves') {

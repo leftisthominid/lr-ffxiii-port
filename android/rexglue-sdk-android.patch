@@ -325,7 +325,7 @@
 +#include <cstdlib>
 +
 +// rex_fiber_switch(void** save_sp, void* load_sp): pushes the AAPCS64 callee-saved state
-+// (x19-x30, d8-d15, FPCR) on the current stack, stores sp to *save_sp, switches to load_sp and
++// (x19-x30, d8-d15, FPCR) on the current stack, stores sp to *save_sp, switches to load_sp, and
 +// pops the same frame from there. A new fiber's stack holds a frame whose x30 is
 +// rex_fiber_start, which calls Fiber::Trampoline().
 +extern "C" void rex_fiber_switch(void** save_sp, void* load_sp);
@@ -822,7 +822,7 @@
 +  // Lightning Returns does not pass the signed-in user's XUID here as it was given (on PC the
 +  // upper half arrives cleared, 00000000BABEBABE), while its saves are written under the full XUID
 +  // (B13EBABEBABEBABE); the PC port links the two folders, which Android's shared storage cannot.
-+  // So saved games are listed under the passed XUID, the user's XUID and the common one (0),
++  // So saved games are listed under the passed XUID, the user's XUID, and the common one (0),
 +  // each folder once.
 +  // The user's own folder first; a save found there is not listed again from another folder.
 +  std::vector<uint64_t> xuids;
@@ -1843,8 +1843,8 @@
        case GuestOutputPaintEffect::kBilinear:
 -        shader_module_create_info.codeSize = sizeof(shaders::guest_output_bilinear_ps);
 -        shader_module_create_info.pCode = shaders::guest_output_bilinear_ps;
-+        // SGSR takes the same inputs as the bilinear pass (texture, sampler, output offset and
-+        // size), so it stands in for it.
++        // SGSR takes the same inputs as the bilinear pass (texture, sampler, and output
++        // offset and size), so it stands in for it.
 +        if (REXCVAR_GET(present_sgsr)) {
 +          shader_module_create_info.codeSize = sizeof(shaders::guest_output_sgsr1_ps);
 +          shader_module_create_info.pCode = shaders::guest_output_sgsr1_ps;

@@ -43,7 +43,7 @@ bool LrAndroidRestartProcess(int generation);
 // Called by the game's main thread once per frame with that frame's work time (without the
 // frame-pacing sleep) and the frame rate the game runs at. Reports it to Android's performance
 // hint API (ADPF), which raises CPU clocks and moves the threads to fast cores when frames run
-// long; the session covers the main thread, the GPU command thread and the busiest game threads.
+// long; the session covers the main thread, the GPU command thread, and the busiest game threads.
 void LrAndroidFrameDone(uint64_t work_us, double frame_rate);
 
 // Touch layer (lr_hooks.cpp; driven from Java through lr_android_main.cpp's JNI functions).

@@ -1,6 +1,6 @@
 # Lightning Returns: Final Fantasy XIII - Triumfulgurate Edition
 
-A builder for a native Windows and Android port, made from three copies of the game: Xbox 360, PS3 and Steam.
+A builder for a native Windows and Android port, made from three copies of the game: Xbox 360, PS3, and Steam.
 
 This builds a native Windows and/or Android version of **Lightning Returns: Final Fantasy XIII**
 from **your own copy of the Xbox 360 game**, with what your PS3 and Steam copies add. The Xbox 360 code is recompiled to C++ on your
@@ -22,14 +22,14 @@ has nowhere near the coding experience it would have taken to do this without ge
 - Optional, each adds something:
   - **The PS3 disc image** (USA, BLUS31311): the PS3 cinematics and the PS3 button / UI set
     (Settings > Button Prompts).
-  - **The Steam version**: Japanese voices, lip-sync and text (Settings > Voice / Text Language),
+  - **The Steam version**: Japanese voices, lip-sync, and text (Settings > Voice / Text Language),
     and your Steam saves are imported.
   - **Xbox 360 DLC** (bought on a 360 or an Xbox One / Series console and downloaded on a 360,
     copied off it to USB): the DLC garbs and weapons.
   - **PS3 saves** (copied off a PS3, or from RPCS3): put the save folders in
     `Documents\lightningreturns\ps3_saves`; they are imported when the game starts (experimental).
-- Windows 10 or 11, 64-bit, about 30 GB free, an internet connection for the build tools.
-- For Android: a phone or handheld with a Snapdragon (Adreno) GPU, Android 10 or newer, USB
+- Windows 10 or 11, 64-bit, about 30 GB free, and an internet connection for the build tools.
+- For Android: a phone or handheld with a Snapdragon (Adreno) GPU, Android 10 or newer, and USB
   debugging on. The builder downloads Google's Android tools itself, adb included.
 
 ## Status
@@ -47,7 +47,7 @@ Double-click **`Build Lightning Returns.bat`** and answer the questions. The bui
 game files where it can, checks each one, downloads the build tools it needs into the output
 folder (pinned versions, checked by SHA-256), and does the rest. A stopped build carries on from
 where it stopped when you run it again. With a finished build, the same file offers to add the
-360 DLC, the PS3 disc or the Steam version later, or to install on a phone.
+360 DLC, the PS3 disc, or the Steam version later, or to install on a phone.
 
 Your game files are only read, never changed. Microsoft's C++ build tools (Visual Studio 2022
 Build Tools, "Desktop development with C++") are needed on Windows; if they are missing the
@@ -65,18 +65,18 @@ screen.
 | `builder.ps1`, `builder\` | the builder (PowerShell) |
 | `project\` | the ReXGlue project: CMake files, the recompiler manifest and function hints (addresses), and the port's own code (`src\`) |
 | `plugin\` | the renderer (the ReXGlue SDK's graphics code with the port's changes) |
-| `android\` | the Android app (Java, resources), the CMake wrappers and the SDK's Android changes |
-| `converters\` | the 360 unpacker, the PS3 UI converter, the Japanese voice converter, the icon maker |
+| `android\` | the Android app (Java, resources), the CMake wrappers, and the SDK's Android changes |
+| `converters\` | the 360 unpacker, the PS3 UI converter, the Japanese voice converter, and the icon maker |
 | `scripts\` | the 360 DLC / save importer |
 
 ## Credits
 
-- **[ReXGlue SDK](https://github.com/rexglue/rexglue-sdk)**: the recompiler, runtime and renderer
+- **[ReXGlue SDK](https://github.com/rexglue/rexglue-sdk)**: the recompiler, runtime, and renderer
   this port is built on (BSD-3-Clause), itself derived from **[Xenia](https://github.com/xenia-project/xenia)**.
 - **[bucanero](https://github.com/bucanero)**: the FF XIII-family save cipher (ff13-decrypter), the PS3
-  save key derivation (apollo-lib) and the PS3 save tools (Apollo Save Tool, pfd_sfo_tools), which the
+  save key derivation (apollo-lib), and the PS3 save tools (Apollo Save Tool, pfd_sfo_tools), which the
   Steam and PS3 save import follow.
-- **flatz**: pfdtool, the PS3 `PARAM.PFD` format and the save file decryption.
+- **flatz**: pfdtool, the PS3 `PARAM.PFD` format, and the save file decryption.
 - **cp25stack**: Lightning Returns' PS3 secure file ID (via Apollo's `games.conf`).
 - **Qualcomm**: Snapdragon Game Super Resolution 1, the Android upscaler (BSD-3-Clause).
 - **AMD**: the DXBC checksum code (via Xenia).
@@ -86,7 +86,7 @@ screen.
 - Downloaded by the builder, not part of this repository: LLVM, CMake, Ninja,
   [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) (the icon upscale), ffmpeg (Gyan's Windows
   builds), Eclipse Temurin Java, MinGit, Google's Android SDK and NDK, and the third-party libraries
-  the ReXGlue SDK uses (SDL3, FFmpeg, Vulkan headers, glslang, SPIRV-Tools and others), each under
+  the ReXGlue SDK uses (SDL3, FFmpeg, Vulkan headers, glslang, SPIRV-Tools, and others), each under
   its own license.
 
 ## Licenses
