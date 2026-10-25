@@ -143,6 +143,8 @@ class LrKeyListener final : public rex::ui::WindowInputListener {
 void LrSettingsInit(const std::filesystem::path& dir);
 int LrRecentFrameTimesMs(float* out, int max);
 void LrResolutionStartup(const std::filesystem::path& settings_dir);
+void LrFrameRateStartup();     // lr_hooks.cpp: the 120 Hz vertical blank for 120 fps
+void LrFrameRateAfterSetup();  // lr_hooks.cpp: the game is told 60 Hz again
 int LrConfigGetUiStyle();
 void LrConfigSetUiStyle(int ps3);
 void LrUiStyleForController(int ps3, const char* name);
@@ -858,12 +860,17 @@ class LightningreturnsApp : public rex::ReXApp {
     // Render resolution (Settings > Resolution, LR_Play.ps1 -Resolution): read by the renderer
     // plugin when it is loaded, right after this.
     LrResolutionStartup(user_data_root());
+    // 120 fps (Settings > Frame Rate, PC only): the runtime's vertical blank runs at 120 Hz.
+    LrFrameRateStartup();
   }
+
+  // After the graphics are set up, before the game starts: with 120 fps, the game is told
+  // 60 Hz again (the vertical blank stays at 120 Hz).
+  void OnPostSetup() override { LrFrameRateAfterSetup(); }
 
   // Override virtual hooks for customization:
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
-  // void OnPostSetup() override {}
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>

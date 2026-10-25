@@ -4,7 +4,8 @@
 //   "Button Prompts"  Auto / Xbox 360 / PlayStation 3        -> LrConfigSetUiMode
 //                     (Auto follows the controller in use: Xbox -> 360, DualShock /
 //                     DualSense -> PS3; lightningreturns_app.h watches the pads)
-//   "Frame Rate"      30 fps / 60 fps (gameplay) / 60 fps (all) -> LrConfigSetFps60 (live)
+//   "Frame Rate"      30 fps / 60 fps (gameplay) / 60 fps (all) / 120 fps (PC) -> LrConfigSetFps60
+//                     (live; 120 asks to restart the game)
 //   "Anti-Aliasing"   Off / FXAA / FXAA Extreme (live)        -> LrConfigSetAa
 //   "Cheats"          Off / Free Teleport & Chronostasis / Freeze Clock / Both -> LrConfigSetCheats
 //   "Resolution"      Auto / 720p / 1440p / 2160p (4K)       -> LrConfigSetResolution
@@ -78,8 +79,8 @@ int LrConfigGetUiMode();         // 0 auto, 1 Xbox 360, 2 PlayStation 3
 void LrConfigSetUiMode(int mode);
 int LrConfigVoiceAvailable();
 int LrConfigTextAvailable();  // 1 when the Japanese text is installed  // 1 installed, 0 not installed, -1 not known yet
-int LrConfigGetFps60();         // 0: 30 fps; 1: 60 fps, cutscenes 30; 2: 60 fps everywhere
-void LrConfigSetFps60(int choice);
+int LrConfigGetFps60();         // 0: 30 fps; 1: 60 fps, cutscenes 30; 2: 60 fps everywhere; 3: 120
+bool LrConfigSetFps60(int choice);  // true: a restart is needed to apply it (120 fps)
 int LrConfigGetAa();               // 0 off, 1 FXAA, 2 FXAA extreme
 int LrConfigGetCheats();           // bit 0 free Teleport / Chronostasis, bit 1 freeze the clock
 void LrConfigSetCheats(int choice);
@@ -155,8 +156,13 @@ constexpr LrItem kItems[] = {
      {"$lr_ui_a", "$lr_ui_0", "$lr_ui_1"}, {"$lr_ui_ah", "$lr_ui_0h", "$lr_ui_1h"}},
     {kIdConfirm, "$lr_cfm", "$lr_cfmh", nullptr, 2,
      {"$lr_cfm_0", "$lr_cfm_1"}, {"$lr_cfm_0h", "$lr_cfm_1h"}},
+#if defined(__ANDROID__)
     {kIdFps, "$lr_fps", "$lr_fpsh", nullptr, 3,
      {"$lr_fps_0", "$lr_fps_1", "$lr_fps_2"}, {"$lr_fps_0h", "$lr_fps_1h", "$lr_fps_2h"}},
+#else  // 120 fps: PC only
+    {kIdFps, "$lr_fps", "$lr_fpsh", nullptr, 4,
+     {"$lr_fps_0", "$lr_fps_1", "$lr_fps_2", "$lr_fps_3"}, {"$lr_fps_0h", "$lr_fps_1h", "$lr_fps_2h", "$lr_fps_3h"}},
+#endif
 #if defined(__ANDROID__)  // Android: 720p or 1440p only (menu value 0 / 1 = choice 1 / 2)
     {kIdResolution, "$lr_res", "$lr_resh", nullptr, 2,
      {"$lr_res_1", "$lr_res_2"}, {"$lr_res_1h", "$lr_res_2h"}},
@@ -219,6 +225,8 @@ constexpr LrText kTexts[] = {
     {"$lr_fps_1h", "60 fps in the field, battles, and menus; cutscenes stay at 30 fps, as in the PC version."},
     {"$lr_fps_2", "60 fps (all)"},
     {"$lr_fps_2h", "60 frames per second everywhere, cutscenes included. Game speed stays the same."},
+    {"$lr_fps_3", "120 fps"},
+    {"$lr_fps_3h", "120 fps in the field, battles, and menus; cutscenes at 60 fps. Needs a 120 Hz display. Asks to restart the game."},
     {"$lr_res", "Resolution"},
     {"$lr_res_0", "Auto (Display)"},
     {"$lr_res_1", "720p"},
@@ -305,6 +313,10 @@ const char* lr_dynamic_text(const char* key) {
   if (std::strcmp(key, "$lr_resh") == 0) {
     int now = LrResolutionActiveScale();
     text = "Render size, now " + size(now) + ". A new choice asks to restart the game.";
+    return text.c_str();
+  }
+  if (std::strcmp(key, "$lr_rstq") == 0 && g_lr_restart_scale.load() == -2) {  // 120 fps chosen
+    text = "Restart the game now to run at 120 fps?@rUnsaved progress is lost. Otherwise it runs at 60 fps until the next start.";
     return text.c_str();
   }
   if (std::strcmp(key, "$lr_rstq") == 0 && g_lr_restart_scale.load() < 0) {  // Text Language changed
@@ -758,8 +770,12 @@ REX_HOOK_RAW(sub_8272FA78) {
     return;
   }
   if (id == kIdFps) {
+#if defined(__ANDROID__)
     int choice = int(ctx.r4.u32 < 3 ? ctx.r4.u32 : 0);
-    if (choice != LrConfigGetFps60()) LrConfigSetFps60(choice);
+#else
+    int choice = int(ctx.r4.u32 < 4 ? ctx.r4.u32 : 0);
+#endif
+    if (choice != LrConfigGetFps60() && LrConfigSetFps60(choice)) g_lr_restart_ask.store(-2);  // 120: restart
     return;
   }
   if (id == kIdAa) {

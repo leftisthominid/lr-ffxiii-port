@@ -55,7 +55,8 @@ builder offers to install them (Windows asks for permission once).
 
 To play on Windows: double-click **`lightningreturns.exe`** in the `Lightning Returns` folder of
 the output folder (or the desktop shortcut the builder offers). Everything else is in the game's
-Settings menu. The exe and the Android app get their icon from your own game: Lightning's face on the title
+Settings menu; Settings > Frame Rate offers 30 fps, 60 fps, and (on Windows, with a 120 Hz display)
+120 fps. The exe and the Android app get their icon from your own game: Lightning's face on the title
 screen.
 
 ## What is in this repository

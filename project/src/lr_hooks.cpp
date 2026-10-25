@@ -12,6 +12,7 @@
 #include <cstdlib>
 
 #include <SDL3/SDL.h>
+#include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
@@ -2267,7 +2268,9 @@ std::atomic<int> g_lr_ui_ps3{0};
 // LrUiStyleForController); -1 = no controller seen yet.
 std::atomic<int> g_lr_ui_auto{1}, g_lr_pad_ps3{-1};
 std::atomic<int> g_lr_confirm_b{0};  // 1: B confirms, A cancels (Settings > Confirm Button)
-std::atomic<int> g_lr_fps60{0};  // 0: 30 fps; 1: 60 fps except cutscenes (the PC "Dynamic"); 2: 60 everywhere
+std::atomic<int> g_lr_fps60{0};  // 0: 30 fps; 1: 60 fps except cutscenes (the PC "Dynamic"); 2: 60 everywhere;
+                                 // 3: 120 fps, cutscenes 60 (PC only)
+std::atomic<bool> g_lr_vblank120{false};  // this start runs a 120 Hz vertical blank (LrFrameRateStartup)
 
 std::string lr_read_setting(const char* file) {
   std::string value;
@@ -2730,14 +2733,21 @@ void LrSettingsInit(const std::filesystem::path& dir) {
   lr_set_ui_style(ps3);
   // Frame rate: LR_FPS (LR_Play.ps1 -Fps) wins and is saved; then fps.txt; 30 by default.
   // "60" = everywhere (as before), "60g" = gameplay only.
+  // "120" = 120 fps, cutscenes 60 (PC only; on Android it is 30).
   std::string fps;
   if (const char* env = std::getenv("LR_FPS"); env && env[0]) {
     fps = env;
-    lr_write_setting("fps.txt", fps == "60" || fps == "60g" ? fps.c_str() : "30");
+    lr_write_setting("fps.txt", fps == "60" || fps == "60g" || fps == "120" ? fps.c_str() : "30");
   } else {
     fps = lr_read_setting("fps.txt");
   }
+#if defined(__ANDROID__)
   g_lr_fps60.store(fps == "60" ? 2 : fps == "60g" ? 1 : 0);
+#else
+  // 120 only when this start runs the 120 Hz vertical blank (LrFrameRateStartup; otherwise the
+  // last start with it did not get going, and it is 60 everywhere).
+  g_lr_fps60.store(fps == "120" ? (g_lr_vblank120.load() ? 3 : 2) : fps == "60" ? 2 : fps == "60g" ? 1 : 0);
+#endif
   g_lr_confirm_b.store(lr_read_setting("confirm.txt") == "b" ? 1 : 0);
   // Anti-aliasing: LR_AA (LR_Play.ps1 -AA) wins and is saved; then aa.txt; then LR_AA_DEFAULT; off.
   std::string aa;
@@ -2762,7 +2772,8 @@ void LrSettingsInit(const std::filesystem::path& dir) {
   REXLOG_INFO("LR settings: voice {}, text {}, UI style {}{}, frame rate {} ({})", g_lr_voice_jp.load() ? "Japanese" : "English",
               g_lr_text_jp.load() ? "Japanese" : "English",
               ps3 ? "PS3" : "360", automatic ? " (auto: follows the controller)" : "",
-              g_lr_fps60.load() == 2 ? "60" : g_lr_fps60.load() ? "60 (cutscenes 30)" : "30", dir.string());
+              g_lr_fps60.load() == 3 ? "120 (cutscenes 60)" : g_lr_fps60.load() == 2 ? "60" : g_lr_fps60.load() ? "60 (cutscenes 30)" : "30",
+              dir.string());
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2823,12 +2834,24 @@ void LrConfigSetCheats(int choice) {
               choice & 2 ? "frozen" : "running");
 }
 
-int LrConfigGetFps60() { return g_lr_fps60.load(); }
-void LrConfigSetFps60(int choice) {
+int LrConfigGetFps60() {
+  // 120 chosen in the menu but not running yet (it needs a restart): the menu shows 120.
+  return lr_read_setting("fps.txt") == "120" && g_lr_fps60.load() != 3 ? 3 : g_lr_fps60.load();
+}
+// True when the choice needs a restart (120 fps without the 120 Hz vertical blank of this start).
+bool LrConfigSetFps60(int choice) {
+#if defined(__ANDROID__)
   choice = choice < 0 || choice > 2 ? 0 : choice;
-  g_lr_fps60.store(choice);
-  lr_write_setting("fps.txt", choice == 2 ? "60" : choice == 1 ? "60g" : "30");
-  REXLOG_INFO("LR frame rate: {} chosen", choice == 2 ? "60 fps" : choice == 1 ? "60 fps, cutscenes 30" : "30 fps");
+#else
+  choice = choice < 0 || choice > 3 ? 0 : choice;
+#endif
+  lr_write_setting("fps.txt", choice == 3 ? "120" : choice == 2 ? "60" : choice == 1 ? "60g" : "30");
+  const bool restart = choice == 3 && !g_lr_vblank120.load();
+  // Until the restart, 120 runs as 60 everywhere.
+  g_lr_fps60.store(restart ? 2 : choice);
+  REXLOG_INFO("LR frame rate: {} chosen{}", choice == 3 ? "120 fps, cutscenes 60" : choice == 2 ? "60 fps" : choice == 1 ? "60 fps, cutscenes 30" : "30 fps",
+              restart ? " (from the next start; 60 fps until then)" : "");
+  return restart;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2847,7 +2870,62 @@ void LrConfigSetFps60(int choice) {
 // current mode at app+788): 0 = 59.94 (title, system screens), 1 = 29.97 (field, battle,
 // menus), 2+ = 29.97 (event scenes, animated for 30). The PC version's "Dynamic" frame rate
 // runs mode 1 at 59.94 and keeps the scenes at 29.97; "60 fps (gameplay)" does the same.
+//
+// 120 fps (PC only; as in the FFXIII-2 port, which has the same pacer). The pacer counts whole
+// vertical blanks, and the emulated one is 60 Hz, so 120 needs a 120 Hz vertical blank: the
+// runtime's guest video mode refresh rate (video_mode_refresh_rate, which drives its vblank
+// timer) is 120 while the graphics start, when 120 is the saved choice. The runtime reads it for
+// the timer once, when the timer's thread starts (GraphicsSystem::Setup), and the game must
+// keep seeing a 60 Hz display (told 120, the FFXIII-2 port crashed before its first frame), so
+// the previous value is put back right after (LrFrameRateAfterSetup), before the game starts.
+// The pacer's refresh rate (+0, from the display at start: sub_82ABD350) is used both for the
+// vertical blanks per frame (sub_82ABCF78) and for the frame time (sub_82ABD218: the time
+// between vertical blanks rounded to whole 1/refresh periods); it becomes 119.88 with the
+// 120 Hz vertical blank, so 30 fps is 4 vertical blanks, 60 is 2, 120 is 1, and game speed
+// stays the same. Cutscenes run at 59.94 with the 120 setting. sub_82ABCF38 is only "store f1
+// at this+4", which the game may share with other classes: only the pacer's calls change.
 // ---------------------------------------------------------------------------------------
+namespace {
+std::string g_lr_refresh_before;
+constexpr uint32_t kLrFramePacer = 0x83147A50;  // the pacer's address
+}
+
+// Before the renderer starts (OnPreSetup, after LrResolutionStartup): the 120 Hz vertical blank
+// when 120 fps is the saved choice.
+void LrFrameRateStartup() {
+#if !defined(__ANDROID__)
+  std::string fps = lr_read_setting("fps.txt");
+  if (const char* env = std::getenv("LR_FPS"); env && env[0]) fps = env;
+  if (fps != "120") return;
+  // Safe mode, as for the resolution: 120 is on trial until the game has run 600 frames with it
+  // (the pacer hook below). If the last start with it never got there, this start runs at 60.
+  if (lr_read_setting("fps_trial.txt") == "120") {
+    REXLOG_WARN("LR frame rate: the last start with 120 fps did not get going; back to 60 fps (all)");
+    lr_write_setting("fps.txt", "60");
+    lr_write_setting("fps_trial.txt", "");
+    return;
+  }
+  lr_write_setting("fps_trial.txt", "120");
+  g_lr_refresh_before = rex::cvar::GetFlagByName("video_mode_refresh_rate");
+  const bool ok = rex::cvar::SetFlagByName("video_mode_refresh_rate", "120");
+  g_lr_vblank120.store(ok);
+  if (ok) REXLOG_INFO("LR frame rate: 120 fps; vertical blank at 120 Hz (video_mode_refresh_rate 120)");
+  else REXLOG_WARN("LR frame rate: 120 fps chosen, but the runtime refused video_mode_refresh_rate 120; running at 60");
+#endif
+}
+
+// After the graphics are set up (OnPostSetup), before the game starts: the game is told 60 Hz
+// again; the vblank timer keeps the 120 Hz it started with.
+void LrFrameRateAfterSetup() {
+#if !defined(__ANDROID__)
+  if (!g_lr_vblank120.load()) return;
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));  // the timer thread reads it as it starts
+  const std::string back = g_lr_refresh_before.empty() ? std::string("60") : g_lr_refresh_before;
+  const bool ok = rex::cvar::SetFlagByName("video_mode_refresh_rate", back);
+  REXLOG_INFO("LR frame rate: the game is told {} Hz ({}); the vertical blank stays at 120 Hz",
+              rex::cvar::GetFlagByName("video_mode_refresh_rate"), ok ? "put back" : "could not be put back");
+#endif
+}
 std::atomic<uint32_t> g_lr_fps_app{0};  // the object whose +788 is the frame-rate mode
 
 REX_EXTERN(__imp__sub_822F0FC0);
@@ -2862,22 +2940,47 @@ static std::atomic<double> g_lr_frame_rate_asked{30000.0 / 1001.0};
 
 REX_EXTERN(__imp__sub_82ABCF38);
 REX_HOOK_RAW(sub_82ABCF38) {
+  auto ld = [&](uint32_t a) {
+    const uint8_t* m = base + a;
+    return uint32_t(m[0]) << 24 | uint32_t(m[1]) << 16 | uint32_t(m[2]) << 8 | m[3];
+  };
+  if (ctx.r3.u32 == 0 || ctx.r3.u32 != ld(kLrFramePacer)) {
+    __imp__sub_82ABCF38(ctx, base);  // not the frame pacer
+    return;
+  }
   double asked = ctx.f1.f64;
   const int setting = g_lr_fps60.load(std::memory_order_relaxed);
   int mode = -1;
-  if (uint32_t app = g_lr_fps_app.load(std::memory_order_relaxed)) {
-    const uint8_t* m = base + app + 788;
-    mode = int(uint32_t(m[0]) << 24 | uint32_t(m[1]) << 16 | uint32_t(m[2]) << 8 | m[3]);
-  }
+  if (uint32_t app = g_lr_fps_app.load(std::memory_order_relaxed)) mode = int(ld(app + 788));
   const bool scene = mode >= 2;  // an event scene: stays at 30 with "60 fps (gameplay)"
-  bool raise = setting && asked > 20.0 && asked < 50.0 && (setting == 2 || !scene);
-  if (raise) ctx.f1.f64 = 60000.0 / 1001.0;
+  const bool vblank120 = g_lr_vblank120.load(std::memory_order_relaxed);
+  if (vblank120) {
+    // The pacer's refresh rate, for the 120 Hz vertical blank (see above).
+    const float refresh = 120000.0f / 1001.0f;
+    uint32_t bits;
+    std::memcpy(&bits, &refresh, 4);
+    bits = __builtin_bswap32(bits);
+    std::memcpy(base + ctx.r3.u32, &bits, 4);
+    // 120 fps confirmed once the game has run 600 frames with it (LrFrameRateStartup).
+    static uint32_t frames = 0;
+    if (++frames == 600) {
+      lr_write_setting("fps_trial.txt", "");
+      REXLOG_INFO("LR frame rate: 120 fps confirmed (600 frames)");
+    }
+  }
+  const char* why = "";
+  if (setting == 3 && vblank120 && asked > 20.0 && asked < 100.0) {
+    ctx.f1.f64 = scene ? 60000.0 / 1001.0 : 120000.0 / 1001.0;
+    why = scene ? ", running at 59.94 (120 fps setting, cutscene)" : ", running at 119.88 (120 fps setting)";
+  } else if (setting && asked > 20.0 && asked < 50.0 && (setting >= 2 || !scene)) {
+    ctx.f1.f64 = 60000.0 / 1001.0;
+    why = ", running at 59.94 (60 fps setting)";
+  }
   g_lr_frame_rate_asked.store(ctx.f1.f64, std::memory_order_relaxed);
   static std::atomic<int> last{-1};
-  int now = (raise ? 1000 : int(asked + 0.5)) + 10000 * (mode + 1);
+  int now = int(ctx.f1.f64 + 0.5) * 100 + int(asked + 0.5) + 100000 * (mode + 1);
   if (last.exchange(now) != now)
-    REXLOG_INFO("LR frame rate: the game asks for {:.2f} fps (mode {}){}", asked, mode,
-                raise ? ", running at 59.94 (60 fps setting)" : "");
+    REXLOG_INFO("LR frame rate: the game asks for {:.2f} fps (mode {}){}", asked, mode, why);
   __imp__sub_82ABCF38(ctx, base);
   void LrKeyIconsFrame(uint8_t* base);  // lr_keyboard_icons.inc
   LrKeyIconsFrame(base);
