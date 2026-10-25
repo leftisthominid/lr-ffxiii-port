@@ -58,7 +58,15 @@ struct FrameStats {
   std::atomic<const char*> lock_hold_site{nullptr};
   std::atomic<uint32_t> lock_holds_over_2ms{0};
   std::atomic<uint64_t> lock_hold_us{0};
+  // Vulkan draws: where the renderer thread's time in a draw goes (kDrawPhaseNames), resolves
+  // excluded (counted in resolves / resolve_us), and the full barriers (vulkan_lr_full_barriers).
+  static constexpr int kDrawPhases = 10;
+  std::atomic<uint64_t> phase_us[kDrawPhases];
+  std::atomic<uint32_t> full_barriers{0};
 };
+inline constexpr const char* kDrawPhaseNames[FrameStats::kDrawPhases] = {
+    "shader setup", "primitives", "translation and samplers", "textures", "render targets",
+    "pipeline", "constants", "bindings", "buffers and barriers", "recording"};
 inline uint64_t now_us() {
   return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
                       std::chrono::steady_clock::now().time_since_epoch())
@@ -75,6 +83,19 @@ inline FrameStats& frame_stats() {
   static FrameStats stats;
   return stats;
 }
+// Splits a draw's time into FrameStats::phase_us: Next(i) closes the running phase and starts
+// phase i; the end of the scope closes the last one.
+struct DrawPhases {
+  uint64_t last = now_us();
+  int phase = 0;
+  void Next(int next) {
+    uint64_t now = now_us();
+    frame_stats().phase_us[phase].fetch_add(now - last, std::memory_order_relaxed);
+    last = now;
+    phase = next;
+  }
+  ~DrawPhases() { Next(phase); }
+};
 inline void raise_max(std::atomic<uint64_t>& max, std::atomic<const char*>& site, uint64_t value,
                       const char* where) {
   uint64_t prev = max.load(std::memory_order_relaxed);

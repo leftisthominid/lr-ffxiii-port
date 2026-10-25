@@ -1188,6 +1188,22 @@ void CommandProcessor::LogFrameRate() {
     uint64_t shaders = 0, pipelines = 0, memexports = 0, memexport_bytes = 0, readbacks = 0,
              readback_bytes = 0, readback_syncs = 0, readback_sync_us = 0, invalidated_gpu = 0,
              invalidated_cpu = 0;
+    uint64_t phase_us[lr::FrameStats::kDrawPhases] = {};
+    uint64_t draws = 0, draw_us = 0, resolves = 0, resolve_us = 0, full_barriers = 0;
+  };
+  // Draw time by phase (Vulkan, lr_frame_stats.h kDrawPhaseNames), largest first.
+  auto phase_summary = [](const uint64_t* us, double per) {
+    int order[lr::FrameStats::kDrawPhases];
+    for (int i = 0; i < lr::FrameStats::kDrawPhases; ++i) order[i] = i;
+    std::sort(order, order + lr::FrameStats::kDrawPhases,
+              [&](int a, int b) { return us[a] > us[b]; });
+    std::string text;
+    for (int i = 0; i < lr::FrameStats::kDrawPhases; ++i) {
+      if (!us[order[i]]) break;
+      text += fmt::format("{}{} {:.1f} ms", text.empty() ? "" : ", ", lr::kDrawPhaseNames[order[i]],
+                          double(us[order[i]]) / 1000.0 / per);
+    }
+    return text.empty() ? std::string("-") : text;
   };
   static Window window;
   uint64_t now = rex::chrono::Clock::QueryHostUptimeMillis();
@@ -1218,6 +1234,17 @@ void CommandProcessor::LogFrameRate() {
   uint64_t readback_sync_us = stats.readback_sync_us.exchange(0);
   uint32_t invalidated_gpu = stats.invalidated_by_gpu.exchange(0);
   uint32_t invalidated_cpu = stats.invalidated_by_cpu.exchange(0);
+  uint64_t phase_us[lr::FrameStats::kDrawPhases];
+  for (int i = 0; i < lr::FrameStats::kDrawPhases; ++i) {
+    phase_us[i] = stats.phase_us[i].exchange(0, std::memory_order_relaxed);
+    window.phase_us[i] += phase_us[i];
+  }
+  uint32_t full_barriers = stats.full_barriers.exchange(0);
+  window.draws += draws;
+  window.draw_us += draw_us;
+  window.resolves += resolves;
+  window.resolve_us += resolve_us;
+  window.full_barriers += full_barriers;
   window.invalidated_gpu += invalidated_gpu;
   window.invalidated_cpu += invalidated_cpu;
   window.shaders += shaders;
@@ -1255,6 +1282,8 @@ void CommandProcessor::LogFrameRate() {
                     1000);
     REXLOG_INFO("LR hitch: GPU thread by packet - {}",
                 LrPacketSummary(lr_packets_frame, 1.0, nullptr));
+    REXLOG_INFO("LR hitch: draws by phase - {}; full barriers {}", phase_summary(phase_us, 1.0),
+                full_barriers);
     if (memexports || readbacks || readback_syncs || invalidated_gpu || invalidated_cpu) {
       REXLOG_INFO("LR hitch: memexport draws {} ({:.1f} MB), copied back for texture replacement {} "
                   "({} KB), waits for the GPU to copy back {} ({} ms); textures invalidated by GPU "
@@ -1309,6 +1338,12 @@ void CommandProcessor::LogFrameRate() {
     REXLOG_INFO("LR frames (10 s): GPU thread per frame by packet - {}; all packets {:.1f} ms",
                 top, double(total_ns) / 1e6 / (window.frames ? double(window.frames) : 1.0));
     lr_packets_window = LrPacketTimes{};
+    double frames = window.frames ? double(window.frames) : 1.0;
+    REXLOG_INFO("LR frames (10 s): per frame {:.0f} draws {:.1f} ms, of them {:.1f} resolves "
+                "{:.1f} ms; {:.1f} full barriers; draws by phase - {}",
+                window.draws / frames, window.draw_us / 1000.0 / frames, window.resolves / frames,
+                window.resolve_us / 1000.0 / frames, window.full_barriers / frames,
+                phase_summary(window.phase_us, frames));
   }
   window = Window{};
   window.start_ms = window.last_ms = now;

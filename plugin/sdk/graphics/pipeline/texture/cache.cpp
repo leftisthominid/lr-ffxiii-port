@@ -931,6 +931,17 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
   if (style_generation != replacement_style_generation_) {
     replacement_style_generation_ = style_generation;
     texture_bindings_in_sync_ = 0;
+    // Textures loaded while the 360 style was on were never copied back or hashed for the PS3
+    // UI set (UpdateReplacement skips them then), and a UI sheet the game builds once is not
+    // loaded again: look at every texture again now.
+    if (texture_replacement::Registry::Get().ps3_ui()) {
+      for (auto& entry : textures_) {
+        Texture& texture = *entry.second;
+        if (!texture.replacement_ && !texture.is_replacement()) {
+          UpdateReplacement(texture);
+        }
+      }
+    }
   }
 
   if (texture_became_outdated_.exchange(false, std::memory_order_acquire)) {

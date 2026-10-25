@@ -3720,6 +3720,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
     // Special copy handling.
     return IssueCopy();
   }
+  // Where this draw's time goes, for the "LR frames" log (lr_frame_stats.h).
+  lr::DrawPhases lr_phases;
 
   bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
 
@@ -3859,9 +3861,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
     }
 
     // Process primitives.
+    lr_phases.Next(1);
     if (!primitive_processor_->Process(primitive_processing_result)) {
       return draw_fail("primitive_processing");
     }
+    lr_phases.Next(2);
     if (!primitive_processing_result.host_draw_vertex_count) {
       // Nothing to draw.
       return true;
@@ -3991,6 +3995,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
       pixel_shader ? draw_util::GetNormalizedColorMask(regs, pixel_shader->writes_color_targets())
                    : 0;
 
+  lr_phases.Next(3);
   // Update the textures before most other work in the submission because
   // samplers depend on this (and in case of sampler overflow in a submission,
   // submissions must be split) - may perform dispatches and copying.
@@ -4010,6 +4015,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
 
   const VulkanPipelineCache::PipelineLayoutProvider* pipeline_layout_provider;
   // Set up the render targets - this may perform dispatches and draws.
+  lr_phases.Next(4);
   if (!render_target_cache_->Update(is_rasterization_done, normalized_depth_control,
                                     normalized_color_mask, *vertex_shader)) {
     return draw_fail("render_target_update");
@@ -4020,6 +4026,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
   // textures.
   VkPipeline pipeline;
   void* pipeline_handle = nullptr;
+  lr_phases.Next(5);
   if (!pipeline_cache_->ConfigurePipeline(vertex_shader_translation, pixel_shader_translation,
                                           primitive_processing_result, normalized_depth_control,
                                           normalized_color_mask,
@@ -4073,6 +4080,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
     current_guest_graphics_pipeline_layout_ = pipeline_layout;
   }
 
+  lr_phases.Next(6);
   bool host_render_targets_used =
       render_target_cache_->GetPath() == RenderTargetCache::Path::kHostRenderTargets;
   uint32_t draw_resolution_scale_x = texture_cache_->draw_resolution_scale_x();
@@ -4144,9 +4152,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
 
   // Update uniform buffers and descriptor sets after binding the pipeline with
   // the new layout.
+  lr_phases.Next(7);
   if (!UpdateBindings(vertex_shader, pixel_shader)) {
     return draw_fail("update_bindings");
   }
+  lr_phases.Next(8);
 
   // Ensure vertex buffers are resident.
   const Shader::ConstantRegisterMap& constant_map_vertex = vertex_shader->constant_register_map();
@@ -4287,6 +4297,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
       render_target_cache_->last_update_framebuffer());
 
   // Draw.
+  lr_phases.Next(9);
   if (primitive_processing_result.index_buffer_type ==
           PrimitiveProcessor::ProcessedIndexBufferType::kNone ||
       shader_32bit_index_dma) {
@@ -4734,6 +4745,7 @@ bool VulkanCommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_
 }
 
 void VulkanCommandProcessor::LrFullBarrier() {
+  lr::frame_stats().full_barriers.fetch_add(1, std::memory_order_relaxed);
   SubmitBarriers(true);
   VkMemoryBarrier memory_barrier;
   memory_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -4749,6 +4761,8 @@ bool VulkanCommandProcessor::IssueCopy() {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+  lr::ScopedTime lr_time(lr::frame_stats().resolve_us);
+  lr::frame_stats().resolves.fetch_add(1, std::memory_order_relaxed);
 
   if (!BeginSubmission(true)) {
     return false;
