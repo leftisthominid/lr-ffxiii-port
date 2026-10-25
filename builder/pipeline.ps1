@@ -549,6 +549,23 @@ function Reset-FutureTimes([string[]]$dirs) {
   if ($n) { Say "  $n file(s) were dated in the future (zip time zones); dated now" }
 }
 
+# The game code this builder holds (project, renderer, and Android sources): a fingerprint of
+# every file, kept in the build state, so a newer builder rebuilds only the code (builder.ps1).
+function Get-CodeHash($state) {
+  $roots = @('project', 'plugin')
+  if ($state.target -in 'android', 'both') { $roots += 'android' }
+  $list = New-Object Text.StringBuilder
+  foreach ($r in $roots) {
+    $dir = Join-Path $script:Repo $r
+    foreach ($f in @(Get-ChildItem -LiteralPath $dir -Recurse -File -ErrorAction SilentlyContinue | Sort-Object FullName)) {
+      $h = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash
+      [void]$list.Append($f.FullName.Substring($dir.Length)).Append('|').Append($r).Append('=').Append($h).Append("`n")
+    }
+  }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($list.ToString())))) -replace '-', ''
+}
+
 function Invoke-Pipeline($state, [string[]]$Only = @()) {
   $p = Get-Paths $state
   New-Item -ItemType Directory -Force -Path $p.logs, $p.work, $p.tools | Out-Null
@@ -582,6 +599,7 @@ function Invoke-Pipeline($state, [string[]]$Only = @()) {
     Say ("  done ({0:mm\:ss})" -f $sw.Elapsed) 'Green'
   }
   $state.finished = $true
+  $state | Add-Member -NotePropertyName codeHash -NotePropertyValue (Get-CodeHash $state) -Force
   Save-BuildState $state
   Say ''
   Say 'All done.' 'Green'

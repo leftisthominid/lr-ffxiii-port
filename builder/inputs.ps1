@@ -260,7 +260,8 @@ function Ask-Output($state) {
 
 # ---- build state (builder_state.json in the output folder: choices + finished steps) ----
 function New-BuildState([string]$target) {
-  return [pscustomobject]@{ version = 1; target = $target; output = ''; inputs = @{}; shortcut = $false; done = @(); finished = $false }
+  return [pscustomobject]@{ version = 1; target = $target; output = ''; inputs = @{}; shortcut = $false; done = @(); finished = $false
+                            codeHash = '' }
 }
 function Read-BuildState([string]$output) {
   $f = Join-Path $output 'builder_state.json'
@@ -271,7 +272,7 @@ function Read-BuildState([string]$output) {
     if ($p.Value) { $h = @{}; foreach ($q in $p.Value.PSObject.Properties) { $h[$q.Name] = $q.Value }; $inputs[$p.Name] = $h }
   }
   return [pscustomobject]@{ version = $j.version; target = $j.target; output = $output; inputs = $inputs; shortcut = [bool]$j.shortcut
-                            done = @($j.done); finished = [bool]$j.finished }
+                            done = @($j.done); finished = [bool]$j.finished; codeHash = [string]$j.codeHash }
 }
 function Save-BuildState($state) {
   $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $state.output 'builder_state.json') -Encoding UTF8

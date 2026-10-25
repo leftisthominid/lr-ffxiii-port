@@ -84,6 +84,18 @@ if ($state -and $state.finished) {
     Say ("This builder adds to your build: {0}" -f (($new | ForEach-Object { $steps[$_].title }) -join ', ')) 'Cyan'
     Invoke-Pipeline $state -Only $new
   }
+  # Game code newer than this build's (a newer builder): the game and the renderer are built
+  # again from it; the recompiled code, game files, movies, voices, and DLC stay.
+  if ($state.codeHash -ne (Get-CodeHash $state)) {
+    $code = @('project')
+    if ($state.target -in 'windows', 'both') { $code += @('exe', 'plugin', 'install') }
+    if ($state.done -contains 'android') { $code += 'android' }
+    Say ''
+    Say 'This builder has newer game code than your build: building the game and the renderer again' 'Cyan'
+    Say '(the recompiled code, the game files, movies, voices, and DLC are kept).' 'Cyan'
+    Invoke-Pipeline $state -Only $code
+    if ($state.done -contains 'phone') { Say 'On a phone: choose "Install on a phone" below to put the new app on it.' 'Cyan' }
+  }
   Say ''
   $c = Ask-Choice 'Lightning Returns is already built here. What do you want to do?' @(
     'Add or update the 360 DLC', 'Add the PS3 disc (cinematics, PS3 buttons)', 'Add the Steam version (Japanese voices)',
